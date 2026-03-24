@@ -1,0 +1,4 @@
+python_embedded/
+backup/
+dati.json
+*.log
