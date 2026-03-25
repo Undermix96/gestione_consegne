@@ -601,6 +601,65 @@
   .no-giornata .icon { font-size: 48px; }
   .no-giornata p { font-size: 14px; }
 
+
+  /* ── SETTINGS ── */
+  .settings-section {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px 24px;
+    max-width: 560px;
+  }
+  .settings-title {
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--text);
+    margin-bottom: 6px;
+  }
+  .settings-desc {
+    font-size: 12px;
+    color: var(--muted);
+    line-height: 1.5;
+  }
+  .squadra-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    padding: 8px 12px;
+  }
+  .squadra-row .sq-name {
+    flex: 1;
+    font-size: 13px;
+    font-weight: 500;
+  }
+  .squadra-row input {
+    flex: 1;
+    background: transparent;
+    border: none;
+    color: var(--text);
+    font-size: 13px;
+    font-family: 'DM Sans', sans-serif;
+    outline: none;
+  }
+
+  /* ── SQUADRA BADGE ── */
+  .sq-badge {
+    display: inline-block;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 2px 7px;
+    border-radius: 4px;
+    background: rgba(124,92,252,.18);
+    color: var(--accent2);
+    white-space: nowrap;
+    max-width: 90px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    vertical-align: middle;
+  }
   /* ── SCHERMATA BLOCCANTE DISCONNESSIONE ── */
   #disconnectOverlay {
     display: none;
@@ -675,6 +734,7 @@
   <nav class="nav-tabs">
     <button class="nav-tab active" onclick="switchView('lista')">📋 Lista Consegne</button>
     <button class="nav-tab" onclick="switchView('giornate')">📅 Giornate</button>
+    <button class="nav-tab" onclick="switchView('impostazioni')">⚙️ Impostazioni</button>
   </nav>
   <div class="spacer"></div>
   <div class="clients-badge" id="clientsBadge" title="Utenti connessi in questo momento">
@@ -739,6 +799,7 @@
               <th>Prenotazione</th>
               <th>Cliente</th>
               <th>Città</th>
+              <th>Squadra</th>
               <th>Tipo consegna</th>
               <th>Prodotto</th>
               <th>Giorno programmato</th>
@@ -755,6 +816,7 @@
       <div class="view-bar">
         <h2 id="giornataTitle">Giornate di consegna</h2>
         <div class="spacer"></div>
+        <button class="btn btn-ghost" id="btnStampaPDF" onclick="stampaPDF()" style="display:none">🖨️ Stampa PDF</button>
         <button class="btn btn-ghost" onclick="openNewGiornataModal()">+ Nuova giornata</button>
       </div>
       <div id="giornataContent" style="flex:1;overflow:hidden;display:flex;flex-direction:column;">
@@ -764,6 +826,25 @@
           <button class="btn btn-primary" onclick="openNewGiornataModal()">+ Aggiungi giornata</button>
         </div>
         <div class="giornata-wrap" id="giornataWrap" style="display:none"></div>
+      </div>
+    </div>
+
+
+    <!-- ── VISTA IMPOSTAZIONI ── -->
+    <div class="view" id="viewImpostazioni">
+      <div class="view-bar">
+        <h2>Impostazioni</h2>
+      </div>
+      <div style="flex:1;overflow-y:auto;padding:24px 28px;">
+        <div class="settings-section">
+          <div class="settings-title">Gestione Squadre</div>
+          <div class="settings-desc">Aggiungi, rinomina o elimina le squadre di consegna. Le squadre vengono assegnate alle giornate.</div>
+          <div id="squadreList" style="margin-top:14px;display:flex;flex-direction:column;gap:8px;"></div>
+          <div style="margin-top:12px;display:flex;gap:10px;align-items:center;">
+            <input type="text" id="newSquadraInput" placeholder="Nome nuova squadra…" style="background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:7px;padding:8px 12px;font-size:13px;font-family:'DM Sans',sans-serif;outline:none;flex:1;" onkeydown="if(event.key==='Enter')addSquadra()"/>
+            <button class="btn btn-primary" onclick="addSquadra()">+ Aggiungi</button>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -901,6 +982,12 @@
         <label>Data della giornata</label>
         <input type="date" id="f_nuovaGiornata"/>
       </div>
+      <div class="form-group" style="margin-top:12px;">
+        <label>Squadra</label>
+        <select id="f_nuovaGiornataSquadra">
+          <option value="">— Nessuna squadra —</option>
+        </select>
+      </div>
     </div>
     <div class="modal-footer">
       <button class="btn btn-ghost" onclick="closeModal('modalGiornata')">Annulla</button>
@@ -932,7 +1019,7 @@
 //  STATO GLOBALE
 // -------------------------------------------
 const API = `http://${window.location.hostname}:8742/api`;
-let db = { consegne: [], giornate: [] };
+let db = { consegne: [], giornate: [], squadre: [] };
 let currentView = 'lista';
 let currentGiornataId = null;
 let editingConsegnaId = null;
@@ -941,6 +1028,7 @@ let isDirty = false;
 let serverOnline = true;
 let pingFailCount = 0;
 const PING_FAIL_THRESHOLD = 2;
+let expandedRowId = null; // riga espansa nella lista
 
 // -------------------------------------------
 //  INIT
@@ -1037,6 +1125,7 @@ async function loadData() {
     db = await r.json();
     if (!db.consegne) db.consegne = [];
     if (!db.giornate) db.giornate = [];
+    if (!db.squadre) db.squadre = [];
     if (db._connectedClients !== undefined) {
       document.getElementById('clientsCount').textContent = db._connectedClients;
     }
@@ -1149,6 +1238,9 @@ function switchView(v) {
     sidebar.classList.remove('hidden');
     renderSidebar();
     if (currentGiornataId) renderGiornata(currentGiornataId);
+  } else if (v === 'impostazioni') {
+    sidebar.classList.add('hidden');
+    renderSquadreSettings();
   } else {
     sidebar.classList.add('hidden');
     renderLista();
@@ -1164,6 +1256,8 @@ function renderAll() {
   renderSidebar();
   if (currentGiornataId) renderGiornata(currentGiornataId);
   updateCittaFilter();
+  populateSquadreSelect();
+  if (currentView === 'impostazioni') renderSquadreSettings();
 }
 
 function autoCompleteStati() {
@@ -1196,7 +1290,7 @@ function renderLista() {
   tbody.innerHTML = '';
 
   if (rows.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:40px;color:var(--muted);">Nessuna consegna trovata.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="10" style="text-align:center;padding:40px;color:var(--muted);">Nessuna consegna trovata.</td></tr>`;
     return;
   }
 
@@ -1204,12 +1298,14 @@ function renderLista() {
     const stato = c.stato || 'attesa';
     const tr = document.createElement('tr');
     tr.dataset.stato = stato;
+    if (c.id === expandedRowId) tr.classList.add('expanded');
     tr.innerHTML = `
       <td>▶</td>
       <td>${statoPill(stato)}</td>
       <td class="muted" style="font-family:'DM Mono',monospace">${fmtDate(c.dataPrenotazione)}</td>
-      <td><strong>${c.nome || ''} ${c.cognome || ''}</strong></td>
+      <td><strong>${c.cognome || ''} ${c.nome || ''}</strong></td>
       <td class="muted">${c.citta || '—'}</td>
+      <td>${squadraBadgeForConsegna(c.id)}</td>
       <td>${tipoBadge(c.tipoConsegna)}</td>
       <td class="muted">${c.tipoProdotto || '—'}</td>
       <td class="muted" style="font-family:'DM Mono',monospace">${fmtDate(c.giornoConsegna)}</td>
@@ -1221,7 +1317,7 @@ function renderLista() {
     const detail = document.createElement('tr');
     detail.className = 'row-detail';
     detail.id = `detail-${c.id}`;
-    detail.innerHTML = `<td colspan="9">
+    detail.innerHTML = `<td colspan="10">
       <div class="detail-grid">
         <div class="detail-field"><label>Indirizzo</label><span>${c.indirizzo || '—'}</span></div>
         <div class="detail-field"><label>Telefono 1</label><span>${c.tel1 || '—'}</span></div>
@@ -1239,6 +1335,11 @@ function renderLista() {
       </div>
     </td>`;
     tbody.appendChild(detail);
+    // Ripristina riga espansa dopo re-render
+    if (c.id === expandedRowId) {
+      detail.classList.add('open');
+      tr.querySelector('td:first-child').textContent = '▼';
+    }
   });
 }
 
@@ -1253,6 +1354,9 @@ function toggleRowDetail(id, tr) {
   if (!isOpen) {
     detail.classList.add('open');
     tr.querySelector('td:first-child').textContent = '▼';
+    expandedRowId = id;
+  } else {
+    expandedRowId = null;
   }
 }
 
@@ -1288,9 +1392,11 @@ function renderSidebar() {
     const dotColor = past ? 'var(--done)' : 'var(--sched)';
     const item = document.createElement('div');
     item.className = 'sidebar-item' + (g.id === currentGiornataId ? ' active' : '');
+    const sqName = g.squadra ? `<span class="sq-badge" style="margin-left:2px;font-size:9px;">${g.squadra}</span>` : '';
     item.innerHTML = `
       <span class="day-dot" style="background:${dotColor}"></span>
       <span>${fmtDate(g.data)}</span>
+      ${sqName}
       <span class="day-badge">${count}</span>
     `;
     item.addEventListener('click', () => selectGiornata(g.id));
@@ -1304,6 +1410,7 @@ function selectGiornata(id) {
   renderGiornata(id);
   document.getElementById('noGiornata').style.display = 'none';
   document.getElementById('giornataWrap').style.display = '';
+  document.getElementById('btnStampaPDF').style.display = '';
 }
 
 function renderGiornata(id) {
@@ -1318,7 +1425,8 @@ function renderGiornata(id) {
 
   const totale = consegne.length;
   const completate = consegne.filter(c => c.stato === 'completata').length;
-  document.getElementById('giornataTitle').textContent = `Giornata del ${fmtDate(g.data)}`;
+  const sqLabel = g.squadra ? ` — ${g.squadra}` : '';
+  document.getElementById('giornataTitle').textContent = `Giornata del ${fmtDate(g.data)}${sqLabel}`;
 
   wrap.innerHTML = `
     <div class="giornata-header">
@@ -1348,7 +1456,7 @@ function deliveryCard(c, num, gid) {
     <span class="drag-handle">⠿</span>
     <span class="card-num">${num}</span>
     <div class="card-body">
-      <div class="card-name">${c.nome || ''} ${c.cognome || ''}</div>
+      <div class="card-name">${c.cognome || ''} ${c.nome || ''}</div>
       <div class="card-sub">📍 ${c.citta || ''}${c.indirizzo ? ', ' + c.indirizzo : ''} &nbsp;·&nbsp; 📞 ${c.tel1 || '—'} &nbsp;·&nbsp; 🕐 ${c.fasciaOraria || 'orario n.d.'}</div>
     </div>
     <div class="card-tipo">${tipoBadge(c.tipoConsegna)}</div>
@@ -1460,14 +1568,16 @@ function deleteGiornata(gid) {
 // -------------------------------------------
 function openNewGiornataModal() {
   document.getElementById('f_nuovaGiornata').value = today();
+  populateSquadreSelect();
   openModal('modalGiornata');
 }
 
 function saveNuovaGiornata() {
   const data = document.getElementById('f_nuovaGiornata').value;
   if (!data) { toast('Inserisci una data'); return; }
-  if (db.giornate.find(g => g.data === data)) { toast('Giornata già esistente per questa data'); return; }
-  const g = { id: uid(), data, consegneIds: [] };
+  // Permesso avere stessa data con squadra diversa — nessun blocco
+  const squadra = document.getElementById('f_nuovaGiornataSquadra').value;
+  const g = { id: uid(), data, squadra, consegneIds: [] };
   db.giornate.push(g);
   markDirty();
   remoteLog(`Aggiunta giornata ${data}`);
@@ -1508,7 +1618,7 @@ function renderSelectList() {
     <label class="select-item">
       <input type="checkbox" value="${c.id}"/>
       <div>
-        <div class="si-name">${c.nome || ''} ${c.cognome || ''}</div>
+        <div class="si-name">${c.cognome || ''} ${c.nome || ''}</div>
         <div class="si-sub">📍 ${c.citta || '—'} · ${c.tipoProdotto || '—'} · Pren. ${fmtDate(c.dataPrenotazione)}</div>
       </div>
     </label>
@@ -1627,6 +1737,177 @@ function deleteCurrentConsegna() {
   closeModal('modalConsegna');
   renderAll();
   toast('Consegna eliminata');
+}
+
+
+// -------------------------------------------
+//  SQUADRE
+// -------------------------------------------
+function populateSquadreSelect() {
+  const sel = document.getElementById('f_nuovaGiornataSquadra');
+  if (!sel) return;
+  const cur = sel.value;
+  sel.innerHTML = '<option value="">— Nessuna squadra —</option>';
+  (db.squadre || []).forEach(s => {
+    const o = document.createElement('option');
+    o.value = s.nome; o.textContent = s.nome;
+    if (s.nome === cur) o.selected = true;
+    sel.appendChild(o);
+  });
+}
+
+function squadraBadgeForConsegna(cid) {
+  // Trova la giornata a cui appartiene questa consegna
+  const g = db.giornate.find(x => (x.consegneIds || []).includes(cid));
+  if (!g || !g.squadra) return '<span style="color:var(--muted);font-size:11px;">—</span>';
+  return `<span class="sq-badge">${g.squadra}</span>`;
+}
+
+function renderSquadreSettings() {
+  const list = document.getElementById('squadreList');
+  if (!list) return;
+  if (!db.squadre || db.squadre.length === 0) {
+    list.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:8px 0;">Nessuna squadra. Aggiungine una qui sotto.</div>';
+    return;
+  }
+  list.innerHTML = db.squadre.map(s => `
+    <div class="squadra-row" id="sqrow-${s.id}">
+      <input type="text" value="${s.nome}" id="sqinput-${s.id}"
+        onblur="renameSquadra('${s.id}', this.value)"
+        onkeydown="if(event.key==='Enter') this.blur()"/>
+      <button class="icon-btn" title="Elimina squadra" onclick="deleteSquadra('${s.id}')">🗑</button>
+    </div>
+  `).join('');
+}
+
+function addSquadra() {
+  const input = document.getElementById('newSquadraInput');
+  const nome = input.value.trim();
+  if (!nome) { toast('Inserisci un nome per la squadra'); return; }
+  if (db.squadre.find(s => s.nome.toLowerCase() === nome.toLowerCase())) {
+    toast('Squadra già esistente'); return;
+  }
+  db.squadre.push({ id: uid(), nome });
+  input.value = '';
+  markDirty();
+  remoteLog('Aggiunta squadra: ' + nome);
+  renderSquadreSettings();
+  populateSquadreSelect();
+  toast('Squadra aggiunta');
+}
+
+function renameSquadra(id, nuovoNome) {
+  nuovoNome = nuovoNome.trim();
+  if (!nuovoNome) { renderSquadreSettings(); return; }
+  const s = db.squadre.find(x => x.id === id);
+  if (!s) return;
+  const vecchioNome = s.nome;
+  if (vecchioNome === nuovoNome) return;
+  // aggiorna anche nelle giornate
+  db.giornate.forEach(g => { if (g.squadra === vecchioNome) g.squadra = nuovoNome; });
+  s.nome = nuovoNome;
+  markDirty();
+  remoteLog(`Rinominata squadra: ${vecchioNome} → ${nuovoNome}`);
+  renderSquadreSettings();
+  renderSidebar();
+  populateSquadreSelect();
+  toast('Squadra rinominata');
+}
+
+function deleteSquadra(id) {
+  const s = db.squadre.find(x => x.id === id);
+  if (!s) return;
+  if (!confirm(`Eliminare la squadra "${s.nome}"? Le giornate assegnate perderanno la squadra.`)) return;
+  db.giornate.forEach(g => { if (g.squadra === s.nome) g.squadra = ''; });
+  db.squadre = db.squadre.filter(x => x.id !== id);
+  markDirty();
+  remoteLog('Eliminata squadra: ' + s.nome);
+  renderSquadreSettings();
+  renderSidebar();
+  populateSquadreSelect();
+  toast('Squadra eliminata');
+}
+
+// -------------------------------------------
+//  STAMPA PDF GIORNATA
+// -------------------------------------------
+function stampaPDF() {
+  const g = db.giornate.find(x => x.id === currentGiornataId);
+  if (!g) return;
+
+  const consegne = (g.consegneIds || [])
+    .map(cid => db.consegne.find(c => c.id === cid))
+    .filter(Boolean);
+
+  const tipoLabel = { consegna: 'Solo consegna', installazione: 'Installazione semplice', incasso: 'Installazione a incasso/muro' };
+
+  const righe = consegne.map((c, i) => `
+    <div class="cons-block">
+      <div class="cons-header">
+        <span class="cons-num">${i + 1}</span>
+        <span class="cons-nome">${c.cognome || ''} ${c.nome || ''}</span>
+        <span class="cons-tipo">${tipoLabel[c.tipoConsegna] || c.tipoConsegna || '—'}</span>
+      </div>
+      <div class="cons-grid">
+        <div class="cons-field"><span class="fl">Indirizzo</span><span class="fv">${c.citta || ''}${c.indirizzo ? ', ' + c.indirizzo : ''}</span></div>
+        <div class="cons-field"><span class="fl">Piano</span><span class="fv">${c.piano || '—'}</span></div>
+        <div class="cons-field"><span class="fl">Telefono 1</span><span class="fv">${c.tel1 || '—'}</span></div>
+        <div class="cons-field"><span class="fl">Telefono 2</span><span class="fv">${c.tel2 || '—'}</span></div>
+        <div class="cons-field"><span class="fl">Fascia oraria</span><span class="fv">${c.fasciaOraria || '—'}</span></div>
+        <div class="cons-field"><span class="fl">Ritiro RAEE</span><span class="fv">${c.raee === 'si' ? '✓ Sì' : 'No'}</span></div>
+        <div class="cons-field"><span class="fl">Prodotto</span><span class="fv">${c.tipoProdotto || '—'}</span></div>
+        <div class="cons-field"><span class="fl">Codice</span><span class="fv">${c.codiceProdotto || '—'}</span></div>
+        <div class="cons-field full"><span class="fl">Descrizione</span><span class="fv">${c.descrizioneProdotto || '—'}</span></div>
+        ${c.noteAbitazione ? `<div class="cons-field full"><span class="fl">Note abitazione</span><span class="fv">${c.noteAbitazione}</span></div>` : ''}
+        ${c.preferenzePeriodo ? `<div class="cons-field full"><span class="fl">Preferenze periodo</span><span class="fv">${c.preferenzePeriodo}</span></div>` : ''}
+        ${c.note ? `<div class="cons-field full"><span class="fl">Note aggiuntive</span><span class="fv">${c.note}</span></div>` : ''}
+      </div>
+      <div class="cons-check">
+        <span>□ Consegnato</span>
+        <span>□ Non consegnato — Motivo: ____________________________</span>
+      </div>
+    </div>
+  `).join('');
+
+  const html = `<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8"/>
+<title>Giornata ${fmtDate(g.data)}${g.squadra ? ' — ' + g.squadra : ''}</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: Arial, sans-serif; font-size: 11px; color: #111; background: #fff; }
+  .pdf-header { padding: 16px 20px 10px; border-bottom: 2px solid #111; margin-bottom: 14px; }
+  .pdf-header h1 { font-size: 18px; font-weight: 700; }
+  .pdf-header .sub { font-size: 12px; color: #444; margin-top: 3px; }
+  .cons-block { border: 1px solid #ccc; border-radius: 5px; margin: 0 20px 14px; padding: 10px 12px; page-break-inside: avoid; }
+  .cons-header { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px solid #eee; }
+  .cons-num { font-size: 20px; font-weight: 700; color: #555; min-width: 28px; }
+  .cons-nome { font-size: 14px; font-weight: 700; flex: 1; }
+  .cons-tipo { font-size: 10px; background: #eef2ff; color: #3b4fc8; padding: 2px 8px; border-radius: 10px; font-weight: 600; }
+  .cons-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 16px; margin-bottom: 8px; }
+  .cons-field { display: flex; gap: 6px; align-items: baseline; }
+  .cons-field.full { grid-column: 1 / -1; }
+  .fl { font-weight: 700; color: #555; white-space: nowrap; min-width: 110px; font-size: 10px; text-transform: uppercase; letter-spacing: .4px; }
+  .fv { color: #111; }
+  .cons-check { display: flex; gap: 28px; margin-top: 8px; padding-top: 8px; border-top: 1px dashed #ccc; font-size: 11px; color: #333; }
+  @media print { body { -webkit-print-color-adjust: exact; } }
+</style>
+</head>
+<body>
+<div class="pdf-header">
+  <h1>Giornata del ${fmtDate(g.data)}${g.squadra ? ' — ' + g.squadra : ''}</h1>
+  <div class="sub">${consegne.length} consegn${consegne.length === 1 ? 'a' : 'e'} programmat${consegne.length === 1 ? 'a' : 'e'}</div>
+</div>
+${righe}
+</body>
+</html>`;
+
+  const win = window.open('', '_blank');
+  win.document.write(html);
+  win.document.close();
+  win.focus();
+  setTimeout(() => win.print(), 600);
 }
 
 // -------------------------------------------
