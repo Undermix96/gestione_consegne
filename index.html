@@ -7,7 +7,24 @@
 <style>
   @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@300;400;500;600;700&display=swap');
 
+  /* ── PALETTE SQUADRE (indipendente dal tema) ── */
   :root {
+    --sq0:  #4f8aff; --sq0-bg:  rgba(79,138,255,.15);
+    --sq1:  #22c55e; --sq1-bg:  rgba(34,197,94,.15);
+    --sq2:  #f59e0b; --sq2-bg:  rgba(245,158,11,.15);
+    --sq3:  #ef4444; --sq3-bg:  rgba(239,68,68,.15);
+    --sq4:  #a855f7; --sq4-bg:  rgba(168,85,247,.15);
+    --sq5:  #06b6d4; --sq5-bg:  rgba(6,182,212,.15);
+    --sq6:  #f97316; --sq6-bg:  rgba(249,115,22,.15);
+    --sq7:  #ec4899; --sq7-bg:  rgba(236,72,153,.15);
+
+    --sidebar-w: 220px;
+    --header-h:  56px;
+    --radius:    10px;
+  }
+
+  /* ── TEMA SCURO (default) ── */
+  :root, [data-theme="dark"] {
     --bg:        #0f1117;
     --surface:   #181c27;
     --surface2:  #1e2333;
@@ -26,10 +43,56 @@
     --cancel:    #ef4444;
     --cancel-bg: rgba(239,68,68,.10);
 
-    --sidebar-w: 220px;
-    --header-h:  56px;
-    --radius:    10px;
     --shadow:    0 4px 24px rgba(0,0,0,.4);
+    --theme-icon: "☀️";
+  }
+
+  /* ── TEMA CHIARO ── */
+  [data-theme="light"] {
+    --bg:        #f4f6fb;
+    --surface:   #ffffff;
+    --surface2:  #eef1f8;
+    --border:    #d1d9ee;
+    --text:      #1a1f36;
+    --muted:     #7a86a8;
+    --accent:    #2563eb;
+    --accent2:   #6d28d9;
+
+    --wait:      #d97706;
+    --wait-bg:   rgba(217,119,6,.10);
+    --sched:     #2563eb;
+    --sched-bg:  rgba(37,99,235,.08);
+    --done:      #16a34a;
+    --done-bg:   rgba(22,163,74,.10);
+    --cancel:    #dc2626;
+    --cancel-bg: rgba(220,38,38,.08);
+
+    --shadow:    0 4px 24px rgba(0,0,0,.10);
+    --theme-icon: "🌙";
+  }
+
+  /* Auto: rispetta preferenza OS se non forzato manualmente */
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      --bg:        #f4f6fb;
+      --surface:   #ffffff;
+      --surface2:  #eef1f8;
+      --border:    #d1d9ee;
+      --text:      #1a1f36;
+      --muted:     #7a86a8;
+      --accent:    #2563eb;
+      --accent2:   #6d28d9;
+      --wait:      #d97706;
+      --wait-bg:   rgba(217,119,6,.10);
+      --sched:     #2563eb;
+      --sched-bg:  rgba(37,99,235,.08);
+      --done:      #16a34a;
+      --done-bg:   rgba(22,163,74,.10);
+      --cancel:    #dc2626;
+      --cancel-bg: rgba(220,38,38,.08);
+      --shadow:    0 4px 24px rgba(0,0,0,.10);
+      --theme-icon: "🌙";
+    }
   }
 
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -602,6 +665,50 @@
   .no-giornata p { font-size: 14px; }
 
 
+
+
+  /* ── COLOR PICKER SQUADRE ── */
+  .color-picker { display: flex; gap: 5px; align-items: center; }
+  .color-swatch {
+    width: 16px; height: 16px; border-radius: 50%; cursor: pointer;
+    border: 2px solid transparent; transition: transform .15s, border-color .15s;
+    flex-shrink: 0;
+  }
+  .color-swatch:hover { transform: scale(1.2); }
+  .color-swatch.selected { border-color: var(--text); transform: scale(1.15); }
+  /* ── THEME TOGGLE ── */
+  .theme-btn {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 7px;
+    width: 32px; height: 32px;
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer;
+    font-size: 15px;
+    transition: all .2s;
+    flex-shrink: 0;
+  }
+  .theme-btn:hover { border-color: var(--accent); }
+
+  /* ── SQ-BADGE COLORATO ── */
+  .sq-badge { display: inline-block; font-size: 10px; font-weight: 700;
+    padding: 2px 7px; border-radius: 4px; white-space: nowrap;
+    max-width: 90px; overflow: hidden; text-overflow: ellipsis; vertical-align: middle; }
+  .sq-c0 { background: var(--sq0-bg); color: var(--sq0); }
+  .sq-c1 { background: var(--sq1-bg); color: var(--sq1); }
+  .sq-c2 { background: var(--sq2-bg); color: var(--sq2); }
+  .sq-c3 { background: var(--sq3-bg); color: var(--sq3); }
+  .sq-c4 { background: var(--sq4-bg); color: var(--sq4); }
+  .sq-c5 { background: var(--sq5-bg); color: var(--sq5); }
+  .sq-c6 { background: var(--sq6-bg); color: var(--sq6); }
+  .sq-c7 { background: var(--sq7-bg); color: var(--sq7); }
+
+  /* ── SQUADRA COLOR DOT nella sidebar ── */
+  .sq-dot-sidebar {
+    width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+  }
+
   /* ── SETTINGS ── */
   .settings-section {
     background: var(--surface2);
@@ -645,21 +752,7 @@
     outline: none;
   }
 
-  /* ── SQUADRA BADGE ── */
-  .sq-badge {
-    display: inline-block;
-    font-size: 10px;
-    font-weight: 700;
-    padding: 2px 7px;
-    border-radius: 4px;
-    background: rgba(124,92,252,.18);
-    color: var(--accent2);
-    white-space: nowrap;
-    max-width: 90px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    vertical-align: middle;
-  }
+
   /* ── SCHERMATA BLOCCANTE DISCONNESSIONE ── */
   #disconnectOverlay {
     display: none;
@@ -737,6 +830,7 @@
     <button class="nav-tab" onclick="switchView('impostazioni')">⚙️ Impostazioni</button>
   </nav>
   <div class="spacer"></div>
+  <button class="theme-btn" id="themeBtn" onclick="toggleTheme()" title="Cambia tema"></button>
   <div class="clients-badge" id="clientsBadge" title="Utenti connessi in questo momento">
     <span class="cb-dot"></span>
     <span id="clientsCount">1</span>&nbsp;utente/i
@@ -1034,6 +1128,7 @@ let expandedRowId = null; // riga espansa nella lista
 //  INIT
 // -------------------------------------------
 window.addEventListener('DOMContentLoaded', async () => {
+  initTheme();
   await loadData();
   renderAll();
   // Ping ogni 2 secondi
@@ -1392,7 +1487,7 @@ function renderSidebar() {
     const dotColor = past ? 'var(--done)' : 'var(--sched)';
     const item = document.createElement('div');
     item.className = 'sidebar-item' + (g.id === currentGiornataId ? ' active' : '');
-    const sqName = g.squadra ? `<span class="sq-badge" style="margin-left:2px;font-size:9px;">${g.squadra}</span>` : '';
+    const sqName = g.squadra ? sqBadgeHtml(g.squadra) : '';
     item.innerHTML = `
       <span class="day-dot" style="background:${dotColor}"></span>
       <span>${fmtDate(g.data)}</span>
@@ -1425,8 +1520,7 @@ function renderGiornata(id) {
 
   const totale = consegne.length;
   const completate = consegne.filter(c => c.stato === 'completata').length;
-  const sqLabel = g.squadra ? ` — ${g.squadra}` : '';
-  document.getElementById('giornataTitle').textContent = `Giornata del ${fmtDate(g.data)}${sqLabel}`;
+  document.getElementById('giornataTitle').innerHTML = `Giornata del ${fmtDate(g.data)}${g.squadra ? ' &nbsp;' + sqBadgeHtml(g.squadra) : ''}`;
 
   wrap.innerHTML = `
     <div class="giornata-header">
@@ -1740,6 +1834,48 @@ function deleteCurrentConsegna() {
 }
 
 
+
+// -------------------------------------------
+//  TEMA CHIARO / SCURO
+// -------------------------------------------
+const THEME_KEY = 'gc_theme';
+
+function initTheme() {
+  const saved = localStorage.getItem(THEME_KEY);
+  const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+  const theme = saved || (prefersDark ? 'dark' : 'light');
+  applyTheme(theme, false);
+}
+
+function applyTheme(theme, save = true) {
+  document.documentElement.setAttribute('data-theme', theme);
+  const btn = document.getElementById('themeBtn');
+  if (btn) btn.textContent = theme === 'dark' ? '☀️' : '🌙';
+  if (save) localStorage.setItem(THEME_KEY, theme);
+}
+
+function toggleTheme() {
+  const cur = document.documentElement.getAttribute('data-theme') || 'dark';
+  applyTheme(cur === 'dark' ? 'light' : 'dark');
+}
+
+// -------------------------------------------
+//  COLORI SQUADRE
+// -------------------------------------------
+const SQ_COLORS = 8; // numero di colori disponibili
+
+function getSquadraColorIndex(nome) {
+  if (!nome) return -1;
+  const sq = (db.squadre || []).find(s => s.nome === nome);
+  return sq ? (sq.colorIdx ?? 0) : 0;
+}
+
+function sqBadgeHtml(nome) {
+  if (!nome) return '';
+  const idx = getSquadraColorIndex(nome);
+  return `<span class="sq-badge sq-c${idx}">${nome}</span>`;
+}
+
 // -------------------------------------------
 //  SQUADRE
 // -------------------------------------------
@@ -1750,17 +1886,17 @@ function populateSquadreSelect() {
   sel.innerHTML = '<option value="">— Nessuna squadra —</option>';
   (db.squadre || []).forEach(s => {
     const o = document.createElement('option');
-    o.value = s.nome; o.textContent = s.nome;
+    o.value = s.nome;
+    o.textContent = s.nome;
     if (s.nome === cur) o.selected = true;
     sel.appendChild(o);
   });
 }
 
 function squadraBadgeForConsegna(cid) {
-  // Trova la giornata a cui appartiene questa consegna
   const g = db.giornate.find(x => (x.consegneIds || []).includes(cid));
   if (!g || !g.squadra) return '<span style="color:var(--muted);font-size:11px;">—</span>';
-  return `<span class="sq-badge">${g.squadra}</span>`;
+  return sqBadgeHtml(g.squadra);
 }
 
 function renderSquadreSettings() {
@@ -1770,14 +1906,25 @@ function renderSquadreSettings() {
     list.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:8px 0;">Nessuna squadra. Aggiungine una qui sotto.</div>';
     return;
   }
-  list.innerHTML = db.squadre.map(s => `
+  const colorSwatches = Array.from({length: SQ_COLORS}, (_, i) =>
+    `<span class="color-swatch sq-c${i}" data-idx="${i}" title="Colore ${i+1}"></span>`
+  ).join('');
+  list.innerHTML = db.squadre.map(s => {
+    const ci = s.colorIdx ?? 0;
+    return `
     <div class="squadra-row" id="sqrow-${s.id}">
+      <span class="sq-badge sq-c${ci}" style="min-width:10px;width:12px;height:12px;padding:0;border-radius:50%;flex-shrink:0;"></span>
       <input type="text" value="${s.nome}" id="sqinput-${s.id}"
         onblur="renameSquadra('${s.id}', this.value)"
         onkeydown="if(event.key==='Enter') this.blur()"/>
+      <div class="color-picker" id="cpicker-${s.id}">
+        ${Array.from({length: SQ_COLORS}, (_, i) =>
+          `<span class="color-swatch sq-c${i}${i===ci?' selected':''}" onclick="setSquadraColor('${s.id}',${i})" title="Colore ${i+1}"></span>`
+        ).join('')}
+      </div>
       <button class="icon-btn" title="Elimina squadra" onclick="deleteSquadra('${s.id}')">🗑</button>
     </div>
-  `).join('');
+  `}).join('');
 }
 
 function addSquadra() {
@@ -1787,7 +1934,8 @@ function addSquadra() {
   if (db.squadre.find(s => s.nome.toLowerCase() === nome.toLowerCase())) {
     toast('Squadra già esistente'); return;
   }
-  db.squadre.push({ id: uid(), nome });
+  const colorIdx = db.squadre.length % SQ_COLORS;
+  db.squadre.push({ id: uid(), nome, colorIdx });
   input.value = '';
   markDirty();
   remoteLog('Aggiunta squadra: ' + nome);
@@ -1812,6 +1960,17 @@ function renameSquadra(id, nuovoNome) {
   renderSidebar();
   populateSquadreSelect();
   toast('Squadra rinominata');
+}
+
+function setSquadraColor(id, idx) {
+  const s = db.squadre.find(x => x.id === id);
+  if (!s) return;
+  s.colorIdx = idx;
+  markDirty();
+  renderSquadreSettings();
+  renderSidebar();
+  renderLista();
+  if (currentGiornataId) renderGiornata(currentGiornataId);
 }
 
 function deleteSquadra(id) {
