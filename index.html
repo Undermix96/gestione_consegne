@@ -875,9 +875,12 @@
         <select id="filterStato" onchange="renderLista()">
           <option value="">Tutti gli stati</option>
           <option value="attesa">In attesa</option>
+          <option value="in_attesa">In attesa (nuovo)</option>
+          <option value="da_confermare">Da confermare</option>
           <option value="programmata">Programmata</option>
           <option value="completata">Completata</option>
           <option value="annullata">Annullata</option>
+          <option value="da_riprogrammare">Da riprogrammare</option>
         </select>
         <select id="filterCitta" onchange="renderLista()">
           <option value="">Tutte le città</option>
@@ -965,9 +968,12 @@
           <label>Stato</label>
           <select id="f_stato">
             <option value="attesa">In attesa di programmazione</option>
+            <option value="in_attesa">In attesa (nuovo)</option>
+            <option value="da_confermare">Da confermare</option>
             <option value="programmata">Programmata</option>
             <option value="completata">Completata</option>
             <option value="annullata">Annullata</option>
+            <option value="da_riprogrammare">Da riprogrammare</option>
           </select>
         </div>
         <div class="form-group">
@@ -1292,10 +1298,13 @@ function isPast(dateStr) {
 
 function statoPill(stato) {
   const map = {
-    attesa:      ['pill-wait',   '⏳', 'In attesa'],
-    programmata: ['pill-sched',  '📌', 'Programmata'],
-    completata:  ['pill-done',   '✅', 'Completata'],
-    annullata:   ['pill-cancel', '✕',  'Annullata'],
+    attesa:          ['pill-wait',   '⏳', 'In attesa'],
+    in_attesa:       ['pill-wait',   '⏳', 'In attesa'],
+    da_confermare:   ['pill-wait',   '📞', 'Da confermare'],
+    programmata:     ['pill-sched',  '📌', 'Programmata'],
+    completata:      ['pill-done',   '✅', 'Completata'],
+    annullata:       ['pill-cancel', '✕',  'Annullata'],
+    da_riprogrammare: ['pill-cancel', '🔄', 'Da riprogrammare'],
   };
   const [cls, icon, label] = map[stato] || map['attesa'];
   return `<span class="pill ${cls}"><span class="dot"></span>${icon} ${label}</span>`;
@@ -1358,8 +1367,14 @@ function renderAll() {
 function autoCompleteStati() {
   let changed = false;
   db.consegne.forEach(c => {
+    // Mantieni la logica esistente per retrocompatibilità
     if (c.stato === 'programmata' && c.giornoConsegna && isPast(c.giornoConsegna)) {
       c.stato = 'completata';
+      changed = true;
+    }
+    // Aggiungi anche la logica per il nuovo stato 'attesa' -> 'in_attesa'
+    if (c.stato === 'attesa') {
+      c.stato = 'in_attesa';
       changed = true;
     }
   });
@@ -1618,8 +1633,8 @@ function removeFromGiornata(cid, gid) {
   if (!g) return;
   g.consegneIds = (g.consegneIds || []).filter(id => id !== cid);
   const c = db.consegne.find(x => x.id === cid);
-  if (c && c.stato === 'programmata') {
-    c.stato = 'attesa';
+  if (c && (c.stato === 'programmata' || c.stato === 'da_confermare')) {
+    c.stato = 'in_attesa';
     c.giornoConsegna = '';
     c.fasciaOraria = '';
   }
@@ -1637,8 +1652,8 @@ function deleteGiornata(gid) {
   if (g) {
     (g.consegneIds || []).forEach(cid => {
       const c = db.consegne.find(x => x.id === cid);
-      if (c && c.stato === 'programmata') {
-        c.stato = 'attesa';
+      if (c && (c.stato === 'programmata' || c.stato === 'da_confermare')) {
+        c.stato = 'in_attesa';
         c.giornoConsegna = '';
       }
     });
@@ -1700,7 +1715,7 @@ function renderSelectList() {
   const search = document.getElementById('selectSearch').value.toLowerCase();
   const g = db.giornate.find(x => x.id === selectGiornataId);
   const assigned = new Set(g ? g.consegneIds : []);
-  let candidates = db.consegne.filter(c => c.stato === 'attesa' && !assigned.has(c.id));
+  let candidates = db.consegne.filter(c => (c.stato === 'attesa' || c.stato === 'in_attesa') && !assigned.has(c.id));
   if (search) candidates = candidates.filter(c => `${c.nome} ${c.cognome}`.toLowerCase().includes(search));
 
   const list = document.getElementById('selectList');
@@ -1729,7 +1744,7 @@ function confirmAddToGiornata() {
     if (!g.consegneIds.includes(cid)) g.consegneIds.push(cid);
     const c = db.consegne.find(x => x.id === cid);
     if (c) {
-      c.stato = 'programmata';
+      c.stato = 'da_confermare';
       c.giornoConsegna = g.data;
     }
   });

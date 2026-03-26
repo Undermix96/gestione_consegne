@@ -6,7 +6,7 @@ Sistema completo per la gestione di consegne e installazioni, progettato per tea
 
 ### Gestione Consegne
 - **Creazione e modifica consegne** con dettagli completi (cliente, indirizzo, prodotto, note)
-- **Stati consegna**: In attesa, Programmata, Completata, Annullata
+- **Stati consegna**: In attesa, Da confermare, Programmata, Completata, Annullata, Da riprogrammare
 - **Tipologie**: Solo consegna, Installazione semplice, Installazione a incasso/muro
 - **Ricerca e filtri** per nome cliente, città e stato consegna
 

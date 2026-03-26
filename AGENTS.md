@@ -9,6 +9,7 @@ Gestione Consegne is a delivery management system with:
 - HTML/CSS/JS frontend (index.html) - Responsive UI with dark/light themes
 - PowerShell/Batch scripts for startup and firewall configuration
 - JSON-based data storage with automatic backups
+- Enhanced delivery status tracking with backward compatibility
 
 ## Build/Lint/Test Commands
 
