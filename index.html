@@ -1738,21 +1738,6 @@ function renderSelectList() {
   list.innerHTML = candidates.map(c => `
     <label class="select-item">
       <input type="checkbox" value="${c.id}"/>
-      <div class="select-content">
-        <div class="select-title">
-          ${c.cognome} ${c.nome}
-        </div>
-        <div class="select-meta">
-          <span class="pill pill-wait">${c.stato}</span>
-          ${c.citta ? `<span class="pill pill-mute">${c.citta}</span>` : ''}
-        </div>
-      </div>
-    </label>
-  `).join('');
-}
-  list.innerHTML = candidates.map(c => `
-    <label class="select-item">
-      <input type="checkbox" value="${c.id}"/>
       <div>
         <div class="si-name">${c.cognome || ''} ${c.nome || ''}</div>
         <div class="si-sub">📍 ${c.citta || '—'} · ${c.tipoProdotto || '—'} · Pren. ${fmtDate(c.dataPrenotazione)}</div>
@@ -1937,6 +1922,7 @@ function saveConsegna() {
 }
 
 
+
 function deleteCurrentConsegna() {
   if (!editingConsegnaId) return;
   if (!confirm("Eliminare definitivamente questa consegna? L'operazione non è reversibile.")) return;
@@ -1951,6 +1937,9 @@ function deleteCurrentConsegna() {
   renderAll();
   toast('Consegna eliminata');
 }
+
+
+
 // -------------------------------------------
 //  TEMA CHIARO / SCURO
 // -------------------------------------------
