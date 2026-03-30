@@ -205,7 +205,7 @@ const SQ_COLORS = 8;                // numero colori disponibili per squadre
 - Filtri: ricerca per nome/cognome, stato, città
 - Click su riga → espande dettaglio con tutti i campi (inclusi quelli non visibili in tabella)
 - `expandedRowId` viene preservato ai re-render automatici (il polling non chiude la riga aperta)
-- Colori bordo sinistro per stato: arancio=attesa, blu=programmata, verde=completata, rosso=annullata
+- Colori bordo sinistro per stato: arancio=in_attesa/da_confermare, blu=programmata, verde=completata, rosso=annullata/da_riprogrammare
 - Badge squadra: classe `.sq-badge .sq-cN` dove N è `colorIdx` della squadra
 
 ### Vista Giornate
@@ -292,13 +292,15 @@ I tre textarea hanno contatori caratteri in tempo reale: gialli all'85% del limi
 ```
 
 ### Valori enum
-- `stato`: `"attesa"` | `"programmata"` | `"completata"` | `"annullata"`
+- `stato`: `"attesa"` | `"da_confermare"` | `"programmata"` | `"completata"` | `"annullata"` | `"da_riprogrammare"`
 - `tipoConsegna`: `"consegna"` | `"installazione"` | `"incasso"`
 - `raee`: `"si"` | `"no"`
 - `colorIdx`: `0`..`7` (indice nella palette `--sqN`)
 
 ### Logica stati automatica
-Al caricamento (`autoCompleteStati()`): se una consegna ha `stato === "programmata"` e `giornoConsegna` è nel passato → `stato` viene aggiornato a `"completata"` automaticamente e salvato.
+Al caricamento (`autoCompleteStati()`): 
+1. Se una consegna ha `stato === "programmata"` e `giornoConsegna` è nel passato → `stato` viene aggiornato a `"completata"` automaticamente e salvato.
+2. Se una consegna ha `stato === "attesa"` → `stato` viene aggiornato a `"in_attesa"` per retrocompatibilità.
 
 ### Campo `_connectedClients`
 Aggiunto dal server solo nelle risposte HTTP, **mai scritto su disco**. Il client lo legge per aggiornare il contatore nell'header.
@@ -309,11 +311,11 @@ Aggiunto dal server solo nelle risposte HTTP, **mai scritto su disco**. Il clien
 
 ### Aggiungere una consegna
 1. Vista Lista → "Nuova consegna" → compila form → Salva
-2. La consegna appare in lista con stato "In attesa"
+2. La consegna appare in lista con stato "In attesa" (nuovo stato: in_attesa)
 
 ### Programmare una consegna
 1. Vista Giornate → seleziona o crea una giornata → "Aggiungi consegna"
-2. La modal mostra solo le consegne con stato "attesa"
+2. La modal mostra solo le consegne con stato "attesa" o "in_attesa"
 3. Seleziona → Aggiungi → la consegna diventa "programmata", `giornoConsegna` viene impostato alla data della giornata
 
 ### Rimuovere da una giornata
