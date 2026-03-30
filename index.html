@@ -962,11 +962,11 @@
       <div class="form-grid">
         <div class="form-group">
           <label>Data prenotazione *</label>
-          <input type="date" id="f_dataPrenotazione"/>
+          <input type="date" id="f_dataPrenotazione" readonly/>
         </div>
         <div class="form-group">
           <label>Stato</label>
-          <select id="f_stato">
+          <select id="f_stato" readonly>
             <option value="attesa">In attesa di programmazione</option>
             <option value="in_attesa">In attesa (nuovo)</option>
             <option value="da_confermare">Da confermare</option>
@@ -1047,13 +1047,13 @@
         </div>
         <div class="form-group">
           <label>Giorno programmato</label>
-          <select id="f_giornataAssegnata">
+          <select id="f_giornataAssegnata" readonly>
             <option value="">-- Nessuna giornata --</option>
           </select>
         </div>
         <div class="form-group">
           <label>Fascia oraria</label>
-          <input type="text" id="f_fasciaOraria" placeholder="es. 9:00-12:00, mattina…"/>
+          <input type="text" id="f_fasciaOraria" placeholder="es. 9:00-12:00, mattina…" readonly/>
         </div>
         <div class="form-group full">
           <label>Note aggiuntive</label>
@@ -1869,34 +1869,22 @@ function saveConsegna() {
     data[f] = el ? el.value.trim() : '';
   });
   
-  // Gestione della nuova selezione giornata
-  const giornataId = document.getElementById('f_giornataAssegnata').value;
-  if (giornataId) {
-    // Se c'è una giornata selezionata, impostiamo i campi per la programmazione
-    data.stato = 'programmata';
-    const giornata = db.giornate.find(g => g.id === giornataId);
-    if (giornata) {
-      data.giornoConsegna = giornata.data;
-    }
-  } else {
-    // Se non c'è giornata selezionata, puliamo i campi di programmazione
-    data.giornoConsegna = '';
-    data.fasciaOraria = '';
-    if (data.stato === 'programmata') {
-      data.stato = 'in_attesa';
-    }
-  }
-
-  // Se stiamo modificando una consegna esistente
+  // For editing existing deliveries, we preserve the original date and giornata assignments
+  // and don't allow modification of those fields from the modal
   if (editingConsegnaId) {
     const c = db.consegne.find(x => x.id === editingConsegnaId);
     if (c) {
-      // Se la consegna era assegnata a una giornata e ora non lo è più, aggiorniamo lo stato
-      if (c.giornoConsegna && c.giornoConsegna !== '' && !giornataId) {
-        if (c.stato === 'programmata' || c.stato === 'da_confermare') {
-          c.stato = 'in_attesa';
-        }
+      // Preserve original date and assignment - don't update from modal
+      data.dataPrenotazione = c.dataPrenotazione;
+      data.giornoConsegna = c.giornoConsegna;
+      data.fasciaOraria = c.fasciaOraria;
+      
+      // Only update status if it was changed in the modal
+      if (data.stato === 'programmata' && c.stato !== 'programmata') {
+        // If changing to programmata, we'll need to update the status
+        // But keep the original assignment data
       }
+      
       Object.assign(c, data);
       markDirty();
       remoteLog(`Modificata consegna ${c.nome} ${c.cognome}`);
