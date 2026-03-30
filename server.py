@@ -238,7 +238,26 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._json_response(200, {"clients": get_connected_count()})
 
         else:
-            super().do_GET()
+            # Forza no-cache per i file statici così il browser non usa versioni vecchie
+            self.send_response(200)
+            path = self.translate_path(self.path)
+            if not os.path.isfile(path):
+                self.send_response(404)
+                self.end_headers()
+                return
+            ext = os.path.splitext(path)[1].lower()
+            mime = {
+                '.html': 'text/html; charset=utf-8',
+                '.js':   'application/javascript; charset=utf-8',
+                '.css':  'text/css; charset=utf-8',
+            }.get(ext, 'application/octet-stream')
+            with open(path, 'rb') as f:
+                body = f.read()
+            self.send_header('Content-Type', mime)
+            self.send_header('Content-Length', str(len(body)))
+            self.send_header('Cache-Control', 'no-store')
+            self.end_headers()
+            self.wfile.write(body)
 
     def do_POST(self):
         if self.path == "/api/data":
