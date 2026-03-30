@@ -961,12 +961,19 @@
     <div class="modal-body">
       <div class="form-grid">
         <div class="form-group">
-          <label>Data prenotazione</label>
-          <div id="f_dataPrenotazione_display" style="padding: 9px 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 7px; font-size: 13px;"></div>
+          <label>Data prenotazione *</label>
+          <input type="date" id="f_dataPrenotazione"/>
         </div>
         <div class="form-group">
           <label>Stato</label>
-          <div id="f_stato_display" style="padding: 9px 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 7px; font-size: 13px;"></div>
+          <select id="f_stato">
+            <option value="in_attesa">In attesa</option>
+            <option value="da_confermare">Da confermare</option>
+            <option value="programmata">Programmata</option>
+            <option value="completata">Completata</option>
+            <option value="annullata">Annullata</option>
+            <option value="da_riprogrammare">Da riprogrammare</option>
+          </select>
         </div>
         <div class="form-group">
           <label>Nome *</label>
@@ -1043,7 +1050,7 @@
         </div>
         <div class="form-group">
           <label>Fascia oraria</label>
-          <div id="f_fasciaOraria_display" style="padding: 9px 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 7px; font-size: 13px;"></div>
+          <input type="text" id="f_fasciaOraria" placeholder="es. 9:00-12:00, mattina…"/>
         </div>
         <div class="form-group full">
           <label>Note aggiuntive</label>
@@ -1768,10 +1775,9 @@ function openNewConsegnaModal() {
   document.getElementById('modalConsegnaTitle').textContent = 'Nuova consegna';
   document.getElementById('btnDeleteConsegna').style.display = 'none';
   clearConsegnaForm();
-  document.getElementById('f_dataPrenotazione_display').textContent = fmtDate(today());
-  document.getElementById('f_stato_display').textContent = 'In attesa di programmazione';
+  document.getElementById('f_dataPrenotazione').value = today();
+  document.getElementById('f_stato').value = 'in_attesa';
   document.getElementById('f_giornataAssegnata_display').textContent = '—';
-  document.getElementById('f_fasciaOraria_display').textContent = '—';
   openModal('modalConsegna');
 }
 
@@ -1787,9 +1793,9 @@ function openEditConsegnaModal(id) {
 }
 
 function clearConsegnaForm() {
-  ['nome','cognome','citta','indirizzo','tel1','tel2',
+  ['dataPrenotazione','stato','nome','cognome','citta','indirizzo','tel1','tel2',
    'tipoConsegna','raee','tipoProdotto','codiceProdotto','descrizioneProdotto',
-   'piano','noteAbitazione','preferenzePeriodo','note'
+   'piano','noteAbitazione','preferenzePeriodo','fasciaOraria','note'
   ].forEach(f => {
     const el = document.getElementById('f_' + f);
     if (!el) return;
@@ -1799,10 +1805,10 @@ function clearConsegnaForm() {
 }
 
 function fillConsegnaForm(c) {
-  // Campi editabili
-  ['nome','cognome','citta','indirizzo','tel1','tel2',
+  // Campi editabili (inclusi data, stato, fascia oraria)
+  ['dataPrenotazione','stato','nome','cognome','citta','indirizzo','tel1','tel2',
    'tipoConsegna','raee','tipoProdotto','codiceProdotto','descrizioneProdotto',
-   'piano','noteAbitazione','preferenzePeriodo','note'
+   'piano','noteAbitazione','preferenzePeriodo','fasciaOraria','note'
   ].forEach(f => {
     const el = document.getElementById('f_' + f);
     if (!el) return;
@@ -1810,17 +1816,7 @@ function fillConsegnaForm(c) {
     else el.value = c[f] || '';
   });
 
-  // Campi in sola lettura: data prenotazione e stato
-  document.getElementById('f_dataPrenotazione_display').textContent = fmtDate(c.dataPrenotazione) || '—';
-  const statoMap = {
-    attesa: 'In attesa', in_attesa: 'In attesa',
-    da_confermare: 'Da confermare', programmata: 'Programmata',
-    completata: 'Completata', annullata: 'Annullata',
-    da_riprogrammare: 'Da riprogrammare'
-  };
-  document.getElementById('f_stato_display').textContent = statoMap[c.stato] || c.stato || '—';
-
-  // Giornata e squadra in sola lettura
+  // Giorno programmato + squadra: solo visualizzazione
   if (c.giornoConsegna) {
     const g = db.giornate.find(x => x.data === c.giornoConsegna && (x.consegneIds || []).includes(c.id));
     const squadra = g && g.squadra ? ` — ${g.squadra}` : '';
@@ -1828,7 +1824,6 @@ function fillConsegnaForm(c) {
   } else {
     document.getElementById('f_giornataAssegnata_display').textContent = '—';
   }
-  document.getElementById('f_fasciaOraria_display').textContent = c.fasciaOraria || '—';
 }
 
 function saveConsegna() {
@@ -1836,10 +1831,10 @@ function saveConsegna() {
   const cognome = document.getElementById('f_cognome').value.trim();
   if (!nome && !cognome) { toast('Inserisci almeno nome o cognome'); return; }
 
-  // Legge solo i campi editabili presenti nel form
-  const editableFields = ['nome','cognome','citta','indirizzo','tel1','tel2',
+  // Legge i campi editabili del form
+  const editableFields = ['dataPrenotazione','stato','nome','cognome','citta','indirizzo','tel1','tel2',
     'tipoConsegna','raee','tipoProdotto','codiceProdotto','descrizioneProdotto',
-    'piano','noteAbitazione','preferenzePeriodo','note'];
+    'piano','noteAbitazione','preferenzePeriodo','fasciaOraria','note'];
   const data = {};
   editableFields.forEach(f => {
     const el = document.getElementById('f_' + f);
@@ -1847,9 +1842,10 @@ function saveConsegna() {
   });
 
   if (editingConsegnaId) {
-    // Modifica: preserva sempre data, stato, giornata e fascia oraria dal db
+    // Modifica: preserva giornoConsegna (non editabile dal modale)
     const c = db.consegne.find(x => x.id === editingConsegnaId);
     if (c) {
+      data.giornoConsegna = c.giornoConsegna;
       Object.assign(c, data);
       markDirty();
       remoteLog(`Modificata consegna ${c.nome} ${c.cognome}`);
@@ -1862,12 +1858,9 @@ function saveConsegna() {
     return;
   }
 
-  // Nuova consegna: imposta data odierna e stato iniziale
+  // Nuova consegna
   data.id = 'c' + Date.now();
-  data.dataPrenotazione = today();
-  data.stato = 'in_attesa';
   data.giornoConsegna = '';
-  data.fasciaOraria = '';
   db.consegne.push(data);
   markDirty();
   remoteLog(`Aggiunta nuova consegna ${data.nome} ${data.cognome}`);
