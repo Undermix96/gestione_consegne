@@ -1762,35 +1762,16 @@ function confirmAddToGiornata() {
 // -------------------------------------------
 //  MODAL: CONSEGNA (nuovo / modifica)
 // -------------------------------------------
-function populateGiornateSelect() {
-  const select = document.getElementById('f_giornataAssegnata');
-  if (!select) return;
-  
-  // Svuota il select
-  select.innerHTML = '<option value="">-- Nessuna giornata --</option>';
-  
-  // Filtra solo le giornate con data >= oggi
-  const todayDate = new Date();
-  const todayString = today();
-  
-  db.giornate
-    .filter(g => g.data >= todayString)
-    .sort((a, b) => a.data.localeCompare(b.data))
-    .forEach(g => {
-      const option = document.createElement('option');
-      option.value = g.id;
-      option.textContent = `${g.data} - ${g.squadra || 'Nessuna squadra'}`;
-      select.appendChild(option);
-    });
-}
 
 function openNewConsegnaModal() {
   editingConsegnaId = null;
   document.getElementById('modalConsegnaTitle').textContent = 'Nuova consegna';
   document.getElementById('btnDeleteConsegna').style.display = 'none';
   clearConsegnaForm();
-  document.getElementById('f_dataPrenotazione').value = today();
-  populateGiornateSelect();
+  document.getElementById('f_dataPrenotazione_display').textContent = fmtDate(today());
+  document.getElementById('f_stato_display').textContent = 'In attesa di programmazione';
+  document.getElementById('f_giornataAssegnata_display').textContent = '—';
+  document.getElementById('f_fasciaOraria_display').textContent = '—';
   openModal('modalConsegna');
 }
 
@@ -1801,15 +1782,14 @@ function openEditConsegnaModal(id) {
   document.getElementById('modalConsegnaTitle').textContent = 'Modifica consegna';
   document.getElementById('btnDeleteConsegna').style.display = '';
   fillConsegnaForm(c);
-  populateGiornateSelect();
   resetCounters();
   openModal('modalConsegna');
 }
 
 function clearConsegnaForm() {
-  ['dataPrenotazione','nome','cognome','citta','indirizzo','tel1','tel2',
+  ['nome','cognome','citta','indirizzo','tel1','tel2',
    'tipoConsegna','raee','tipoProdotto','codiceProdotto','descrizioneProdotto',
-   'piano','noteAbitazione','preferenzePeriodo','giornoConsegna','fasciaOraria','note','stato'
+   'piano','noteAbitazione','preferenzePeriodo','note'
   ].forEach(f => {
     const el = document.getElementById('f_' + f);
     if (!el) return;
@@ -1819,30 +1799,36 @@ function clearConsegnaForm() {
 }
 
 function fillConsegnaForm(c) {
-  const fields = ['dataPrenotazione','stato','nome','cognome','citta','indirizzo','tel1','tel2',
-    'tipoConsegna','raee','tipoProdotto','codiceProdotto','descrizioneProdotto',
-    'piano','noteAbitazione','preferenzePeriodo','giornoConsegna','fasciaOraria','note'];
-  fields.forEach(f => {
+  // Campi editabili
+  ['nome','cognome','citta','indirizzo','tel1','tel2',
+   'tipoConsegna','raee','tipoProdotto','codiceProdotto','descrizioneProdotto',
+   'piano','noteAbitazione','preferenzePeriodo','note'
+  ].forEach(f => {
     const el = document.getElementById('f_' + f);
-    if (el) el.value = c[f] || '';
+    if (!el) return;
+    if (el.tagName === 'SELECT') el.value = c[f] || el.options[0].value;
+    else el.value = c[f] || '';
   });
-  
-  // Gestione della nuova selezione giornata
-  const giornataSelect = document.getElementById('f_giornataAssegnata');
-  if (giornataSelect) {
-    // Se la consegna è già assegnata a una giornata, selezioniamo quella
-    if (c.giornoConsegna && c.giornoConsegna !== '') {
-      // Cerchiamo la giornata corrispondente
-      const giornata = db.giornate.find(g => g.data === c.giornoConsegna);
-      if (giornata) {
-        giornataSelect.value = giornata.id;
-      } else {
-        giornataSelect.value = '';
-      }
-    } else {
-      giornataSelect.value = '';
-    }
+
+  // Campi in sola lettura: data prenotazione e stato
+  document.getElementById('f_dataPrenotazione_display').textContent = fmtDate(c.dataPrenotazione) || '—';
+  const statoMap = {
+    attesa: 'In attesa', in_attesa: 'In attesa',
+    da_confermare: 'Da confermare', programmata: 'Programmata',
+    completata: 'Completata', annullata: 'Annullata',
+    da_riprogrammare: 'Da riprogrammare'
+  };
+  document.getElementById('f_stato_display').textContent = statoMap[c.stato] || c.stato || '—';
+
+  // Giornata e squadra in sola lettura
+  if (c.giornoConsegna) {
+    const g = db.giornate.find(x => x.data === c.giornoConsegna && (x.consegneIds || []).includes(c.id));
+    const squadra = g && g.squadra ? ` — ${g.squadra}` : '';
+    document.getElementById('f_giornataAssegnata_display').textContent = fmtDate(c.giornoConsegna) + squadra;
+  } else {
+    document.getElementById('f_giornataAssegnata_display').textContent = '—';
   }
+  document.getElementById('f_fasciaOraria_display').textContent = c.fasciaOraria || '—';
 }
 
 function saveConsegna() {
@@ -1850,31 +1836,20 @@ function saveConsegna() {
   const cognome = document.getElementById('f_cognome').value.trim();
   if (!nome && !cognome) { toast('Inserisci almeno nome o cognome'); return; }
 
-  const fields = ['dataPrenotazione','stato','nome','cognome','citta','indirizzo','tel1','tel2',
+  // Legge solo i campi editabili presenti nel form
+  const editableFields = ['nome','cognome','citta','indirizzo','tel1','tel2',
     'tipoConsegna','raee','tipoProdotto','codiceProdotto','descrizioneProdotto',
-    'piano','noteAbitazione','preferenzePeriodo','giornoConsegna','fasciaOraria','note'];
+    'piano','noteAbitazione','preferenzePeriodo','note'];
   const data = {};
-  fields.forEach(f => {
+  editableFields.forEach(f => {
     const el = document.getElementById('f_' + f);
     data[f] = el ? el.value.trim() : '';
   });
-  
-  // For editing existing deliveries, we preserve the original date and giornata assignments
-  // and don't allow modification of those fields from the modal
+
   if (editingConsegnaId) {
+    // Modifica: preserva sempre data, stato, giornata e fascia oraria dal db
     const c = db.consegne.find(x => x.id === editingConsegnaId);
     if (c) {
-      // Preserve original date and assignment - don't update from modal
-      data.dataPrenotazione = c.dataPrenotazione;
-      data.giornoConsegna = c.giornoConsegna;
-      data.fasciaOraria = c.fasciaOraria;
-      
-      // Only update status if it was changed in the modal
-      if (data.stato === 'programmata' && c.stato !== 'programmata') {
-        // If changing to programmata, we'll need to update the status
-        // But keep the original assignment data
-      }
-      
       Object.assign(c, data);
       markDirty();
       remoteLog(`Modificata consegna ${c.nome} ${c.cognome}`);
@@ -1883,12 +1858,16 @@ function saveConsegna() {
       renderGiornata(currentGiornataId);
       renderSidebar();
       toast('Consegna modificata');
-      return;
     }
+    return;
   }
 
-  // Se stiamo creando una nuova consegna
+  // Nuova consegna: imposta data odierna e stato iniziale
   data.id = 'c' + Date.now();
+  data.dataPrenotazione = today();
+  data.stato = 'in_attesa';
+  data.giornoConsegna = '';
+  data.fasciaOraria = '';
   db.consegne.push(data);
   markDirty();
   remoteLog(`Aggiunta nuova consegna ${data.nome} ${data.cognome}`);
