@@ -961,20 +961,12 @@
     <div class="modal-body">
       <div class="form-grid">
         <div class="form-group">
-          <label>Data prenotazione *</label>
-          <input type="date" id="f_dataPrenotazione" readonly/>
+          <label>Data prenotazione</label>
+          <div id="f_dataPrenotazione_display" style="padding: 9px 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 7px; font-size: 13px;"></div>
         </div>
         <div class="form-group">
           <label>Stato</label>
-          <select id="f_stato" readonly>
-            <option value="attesa">In attesa di programmazione</option>
-            <option value="in_attesa">In attesa (nuovo)</option>
-            <option value="da_confermare">Da confermare</option>
-            <option value="programmata">Programmata</option>
-            <option value="completata">Completata</option>
-            <option value="annullata">Annullata</option>
-            <option value="da_riprogrammare">Da riprogrammare</option>
-          </select>
+          <div id="f_stato_display" style="padding: 9px 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 7px; font-size: 13px;"></div>
         </div>
         <div class="form-group">
           <label>Nome *</label>
@@ -1047,13 +1039,11 @@
         </div>
         <div class="form-group">
           <label>Giorno programmato</label>
-          <select id="f_giornataAssegnata" readonly>
-            <option value="">-- Nessuna giornata --</option>
-          </select>
+          <div id="f_giornataAssegnata_display" style="padding: 9px 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 7px; font-size: 13px;"></div>
         </div>
         <div class="form-group">
           <label>Fascia oraria</label>
-          <input type="text" id="f_fasciaOraria" placeholder="es. 9:00-12:00, mattina…" readonly/>
+          <div id="f_fasciaOraria_display" style="padding: 9px 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 7px; font-size: 13px;"></div>
         </div>
         <div class="form-group full">
           <label>Note aggiuntive</label>
