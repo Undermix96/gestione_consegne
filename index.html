@@ -1936,38 +1936,6 @@ function saveConsegna() {
   toast('Consegna aggiunta');
 }
 
-function saveConsegna() {
-  const nome = document.getElementById('f_nome').value.trim();
-  const cognome = document.getElementById('f_cognome').value.trim();
-  if (!nome && !cognome) { toast('Inserisci almeno nome o cognome'); return; }
-
-  const fields = ['dataPrenotazione','stato','nome','cognome','citta','indirizzo','tel1','tel2',
-    'tipoConsegna','raee','tipoProdotto','codiceProdotto','descrizioneProdotto',
-    'piano','noteAbitazione','preferenzePeriodo','giornoConsegna','fasciaOraria','note'];
-  const data = {};
-  fields.forEach(f => {
-    const el = document.getElementById('f_' + f);
-    data[f] = el ? el.value.trim() : '';
-  });
-
-  if (editingConsegnaId) {
-    const idx = db.consegne.findIndex(c => c.id === editingConsegnaId);
-    if (idx !== -1) db.consegne[idx] = { ...db.consegne[idx], ...data };
-    remoteLog(`Modificata consegna: ${data.nome} ${data.cognome}`);
-    toast('Consegna aggiornata');
-  } else {
-    db.consegne.push({ id: uid(), ...data });
-    remoteLog(`Aggiunta nuova consegna: ${data.nome} ${data.cognome}`);
-    toast('Nuova consegna aggiunta');
-  }
-
-  markDirty();
-  closeModal('modalConsegna');
-  renderLista();
-  renderGiornata(currentGiornataId);
-  renderSidebar();
-  toast('Consegna aggiunta');
-}
 
 function deleteCurrentConsegna() {
   if (!editingConsegnaId) return;
@@ -1983,24 +1951,6 @@ function deleteCurrentConsegna() {
   renderAll();
   toast('Consegna eliminata');
 }
-
-function deleteCurrentConsegna() {
-  if (!editingConsegnaId) return;
-  if (!confirm("Eliminare definitivamente questa consegna? L'operazione non è reversibile.")) return;
-  const c = db.consegne.find(x => x.id === editingConsegnaId);
-  db.giornate.forEach(g => {
-    g.consegneIds = (g.consegneIds || []).filter(id => id !== editingConsegnaId);
-  });
-  db.consegne = db.consegne.filter(c => c.id !== editingConsegnaId);
-  markDirty();
-  remoteLog(`Eliminata consegna: ${c ? c.nome+' '+c.cognome : editingConsegnaId}`);
-  closeModal('modalConsegna');
-  renderAll();
-  toast('Consegna eliminata');
-}
-
-
-
 // -------------------------------------------
 //  TEMA CHIARO / SCURO
 // -------------------------------------------
