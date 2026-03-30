@@ -214,7 +214,7 @@ const SQ_COLORS = 8;                // numero colori disponibili per squadre
 - Card consegne: drag&drop per riordinare (HTML5 Drag API), pulsante ✕ per rimuovere dalla giornata (la consegna torna "in attesa"), pulsante ✏️ per modificare
 - Pulsante "🖨️ Stampa PDF" appare nella view-bar quando una giornata è selezionata
 - Pulsante "+ Aggiungi consegna" apre modal di selezione con lista filtrata dei clienti "in attesa"
-- Pulsante "🗑 Elimina giornata" — le consegne tornano "in attesa"
+- Pulsante "🗑 Elimina giornata" — impossibile eliminare se contiene consegne assegnate
 - Più giornate con la stessa data sono permesse (squadre diverse)
 
 ### Vista Impostazioni
@@ -236,7 +236,7 @@ Campi del form (tutti in `f_[nome]`):
 - `f_tel1`, `f_tel2`, `f_tipoConsegna` (select: consegna/installazione/incasso), `f_raee` (select: si/no)
 - `f_tipoProdotto`, `f_codiceProdotto`, `f_descrizioneProdotto`, `f_piano`
 - `f_noteAbitazione` (textarea, max 170 caratteri), `f_preferenzePeriodo` (textarea, max 90 caratteri)
-- `f_giornoConsegna` (date), `f_fasciaOraria` (text), `f_note` (textarea, max 170 caratteri)
+- `f_giornataAssegnata` (select: giornata esistente), `f_fasciaOraria` (text), `f_note` (textarea, max 170 caratteri)
 
 I tre textarea hanno contatori caratteri in tempo reale: gialli all'85% del limite, rossi al limite.
 
