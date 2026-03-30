@@ -1858,9 +1858,9 @@ function fillConsegnaForm(c) {
     // Se la consegna è già assegnata a una giornata, selezioniamo quella
     if (c.giornoConsegna && c.giornoConsegna !== '') {
       // Cerchiamo la giornata corrispondente
-      const giornataId = db.giornate.find(g => g.data === c.giornoConsegna)?.id;
-      if (giornataId) {
-        giornataSelect.value = giornataId;
+      const giornata = db.giornate.find(g => g.data === c.giornoConsegna);
+      if (giornata) {
+        giornataSelect.value = giornata.id;
       } else {
         giornataSelect.value = '';
       }
@@ -1893,6 +1893,48 @@ function saveConsegna() {
     if (giornata) {
       data.giornoConsegna = giornata.data;
     }
+  } else {
+    // Se non c'è giornata selezionata, puliamo i campi di programmazione
+    data.giornoConsegna = '';
+    data.fasciaOraria = '';
+    if (data.stato === 'programmata') {
+      data.stato = 'in_attesa';
+    }
+  }
+
+  // Se stiamo modificando una consegna esistente
+  if (editingConsegnaId) {
+    const c = db.consegne.find(x => x.id === editingConsegnaId);
+    if (c) {
+      // Se la consegna era assegnata a una giornata e ora non lo è più, aggiorniamo lo stato
+      if (c.giornoConsegna && c.giornoConsegna !== '' && !giornataId) {
+        if (c.stato === 'programmata' || c.stato === 'da_confermare') {
+          c.stato = 'in_attesa';
+        }
+      }
+      Object.assign(c, data);
+      markDirty();
+      remoteLog(`Modificata consegna ${c.nome} ${c.cognome}`);
+      closeModal('modalConsegna');
+      renderLista();
+      renderGiornata(currentGiornataId);
+      renderSidebar();
+      toast('Consegna modificata');
+      return;
+    }
+  }
+
+  // Se stiamo creando una nuova consegna
+  data.id = 'c' + Date.now();
+  db.consegne.push(data);
+  markDirty();
+  remoteLog(`Aggiunta nuova consegna ${data.nome} ${data.cognome}`);
+  closeModal('modalConsegna');
+  renderLista();
+  renderGiornata(currentGiornataId);
+  renderSidebar();
+  toast('Consegna aggiunta');
+}
   } else {
     // Se non c'è giornata selezionata, puliamo i campi di programmazione
     data.giornoConsegna = '';
