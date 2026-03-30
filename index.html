@@ -1963,7 +1963,10 @@ function saveConsegna() {
 
   markDirty();
   closeModal('modalConsegna');
-  renderAll();
+  renderLista();
+  renderGiornata(currentGiornataId);
+  renderSidebar();
+  toast('Consegna aggiunta');
 }
 
 function deleteCurrentConsegna() {
