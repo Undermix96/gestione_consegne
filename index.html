@@ -1981,6 +1981,21 @@ function deleteCurrentConsegna() {
   toast('Consegna eliminata');
 }
 
+function deleteCurrentConsegna() {
+  if (!editingConsegnaId) return;
+  if (!confirm("Eliminare definitivamente questa consegna? L'operazione non è reversibile.")) return;
+  const c = db.consegne.find(x => x.id === editingConsegnaId);
+  db.giornate.forEach(g => {
+    g.consegneIds = (g.consegneIds || []).filter(id => id !== editingConsegnaId);
+  });
+  db.consegne = db.consegne.filter(c => c.id !== editingConsegnaId);
+  markDirty();
+  remoteLog(`Eliminata consegna: ${c ? c.nome+' '+c.cognome : editingConsegnaId}`);
+  closeModal('modalConsegna');
+  renderAll();
+  toast('Consegna eliminata');
+}
+
 
 
 // -------------------------------------------
