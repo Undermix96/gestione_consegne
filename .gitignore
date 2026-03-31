@@ -1,4 +1,6 @@
 python_embedded/
 backup/
+git/
+_working_backup/
 dati.json
 *.log
