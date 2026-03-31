@@ -209,12 +209,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
 
-    def end_headers(self):
-        # Aggiunge no-store su tutte le risposte statiche
-        if not self.path.startswith("/api/"):
-            self.send_header("Cache-Control", "no-store")
-        super().end_headers()
-
     def _json_response(self, code, obj):
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
         self.send_response(code)
@@ -244,7 +238,40 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._json_response(200, {"clients": get_connected_count()})
 
         else:
-            super().do_GET()
+            # Serve file statici direttamente da BASE_DIR (mai da cwd)
+            # Rimuove query string e frammenti, poi normalizza il path
+            url_path = self.path.split('?')[0].split('#')[0]
+            # Redirect root -> index.html (i client LAN aprono spesso solo l'IP)
+            if url_path in ('', '/', '.'):
+                self.send_response(302)
+                self.send_header('Location', '/index.html')
+                self.end_headers()
+                return
+            # Sicurezza: impedisce path traversal (es. ../../etc/passwd)
+            safe_rel = os.path.normpath(url_path.lstrip('/'))
+            if safe_rel.startswith('..') or safe_rel == '.':
+                self.send_response(403)
+                self.end_headers()
+                return
+            path = os.path.join(BASE_DIR, safe_rel)
+            if not os.path.isfile(path):
+                self.send_response(404)
+                self.end_headers()
+                return
+            ext = os.path.splitext(path)[1].lower()
+            mime = {
+                '.html': 'text/html; charset=utf-8',
+                '.js':   'application/javascript; charset=utf-8',
+                '.css':  'text/css; charset=utf-8',
+            }.get(ext, 'application/octet-stream')
+            with open(path, 'rb') as f:
+                body = f.read()
+            self.send_response(200)
+            self.send_header('Content-Type', mime)
+            self.send_header('Content-Length', str(len(body)))
+            self.send_header('Cache-Control', 'no-store')
+            self.end_headers()
+            self.wfile.write(body)
 
     def do_POST(self):
         if self.path == "/api/data":
