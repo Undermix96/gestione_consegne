@@ -2236,84 +2236,110 @@ function stampaPDF() {
     .map(cid => db.consegne.find(c => c.id === cid))
     .filter(Boolean);
 
-  const righe = consegne.map((c, i) => `
+  const righe = consegne.map((c, i) => {
+    const arts = c.articoli && c.articoli.length > 0 ? c.articoli
+      : (c.tipoProdotto || c.codiceProdotto ? [{ tipoConsegna: c.tipoConsegna, tipo: c.tipoProdotto, codice: c.codiceProdotto, desc: c.descrizioneProdotto }] : []);
+
+    const artsHtml = arts.length === 0
+      ? `<tr><td colspan="5" style="color:#888;font-style:italic;text-align:center;padding:6px;">Nessun articolo</td></tr>`
+      : arts.map((a, j) => `
+        <tr>
+          <td style="text-align:center;font-weight:700;color:#555;">${arts.length > 1 ? j + 1 : '—'}</td>
+          <td>${a.tipo || '—'}</td>
+          <td style="font-family:monospace;font-size:10px;">${a.codice || '—'}</td>
+          <td>${a.desc || '—'}</td>
+          <td style="text-align:center;">${tipoLabel[a.tipoConsegna] || 'Consegna'}</td>
+        </tr>`).join('');
+
+    const noteExtra = [
+      c.noteAbitazione    ? `<div class="nota"><span class="nota-label">Note abitazione:</span> ${c.noteAbitazione}</div>` : '',
+      c.preferenzePeriodo ? `<div class="nota"><span class="nota-label">Preferenze periodo:</span> ${c.preferenzePeriodo}</div>` : '',
+      c.note              ? `<div class="nota"><span class="nota-label">Note aggiuntive:</span> ${c.note}</div>` : '',
+    ].filter(Boolean).join('');
+
+    return `
     <div class="cons-block">
       <div class="cons-header">
-        <span class="cons-num">${i + 1}</span>
-        <span class="cons-nome">${c.cognome || ''} ${c.nome || ''}</span>
-        <span class="cons-tipo">${tipoLabel[c.tipoConsegna] || c.tipoConsegna || '—'}</span>
+        <div class="cons-num">${i + 1}</div>
+        <div class="cons-cliente">
+          <div class="cons-nome">${c.cognome || ''} ${c.nome || ''}</div>
+          <div class="cons-addr">${c.citta || ''}${c.indirizzo ? ', ' + c.indirizzo : ''}${c.piano ? ' \u2014 Piano: ' + c.piano : ''}</div>
+        </div>
+        <div class="cons-meta">
+          <div><span class="ml">Tel:</span> ${c.tel1 || '—'}${c.tel2 ? ' / ' + c.tel2 : ''}</div>
+          <div><span class="ml">Orario:</span> ${c.fasciaOraria || '—'} &nbsp;&nbsp; <span class="ml">RAEE:</span> <strong>${c.raee === 'si' ? 'Si' : 'No'}</strong></div>
+        </div>
       </div>
-      <div class="cons-grid">
-        <div class="cons-field"><span class="fl">Indirizzo</span><span class="fv">${c.citta || ''}${c.indirizzo ? ', ' + c.indirizzo : ''}</span></div>
-        <div class="cons-field"><span class="fl">Piano</span><span class="fv">${c.piano || '—'}</span></div>
-        <div class="cons-field"><span class="fl">Telefono 1</span><span class="fv">${c.tel1 || '—'}</span></div>
-        <div class="cons-field"><span class="fl">Telefono 2</span><span class="fv">${c.tel2 || '—'}</span></div>
-        <div class="cons-field"><span class="fl">Fascia oraria</span><span class="fv">${c.fasciaOraria || '—'}</span></div>
-        <div class="cons-field"><span class="fl">Ritiro RAEE</span><span class="fv">${c.raee === 'si' ? '✓ Sì' : 'No'}</span></div>
-        ${(() => {
-          const arts = c.articoli && c.articoli.length > 0 ? c.articoli
-            : (c.tipoProdotto || c.codiceProdotto ? [{ tipoConsegna: c.tipoConsegna, tipo: c.tipoProdotto, codice: c.codiceProdotto, desc: c.descrizioneProdotto }] : []);
-          
-          if (arts.length === 0) return `<div class="cons-field full"><span class="fl">Prodotto</span><span class="fv">—</span></div>`;
-          return arts.map((a, i) => `
-            <div class="cons-field">
-              <span class="fl">Art.${arts.length > 1 ? ' '+(i+1) : ''} — Tipo cons.</span>
-              <span class="fv">${tipoLabel[a.tipoConsegna] || 'Solo consegna'}</span>
-            </div>
-            <div class="cons-field">
-              <span class="fl">Tipologia</span>
-              <span class="fv">${a.tipo || '—'}</span>
-            </div>
-            <div class="cons-field">
-              <span class="fl">Codice</span>
-              <span class="fv">${a.codice || '—'}</span>
-            </div>
-            <div class="cons-field full">
-              <span class="fl">Descrizione</span>
-              <span class="fv">${a.desc || '—'}</span>
-            </div>
-          `).join('');
-        })()}
-        ${c.noteAbitazione ? `<div class="cons-field full"><span class="fl">Note abitazione</span><span class="fv">${c.noteAbitazione}</span></div>` : ''}
-        ${c.preferenzePeriodo ? `<div class="cons-field full"><span class="fl">Preferenze periodo</span><span class="fv">${c.preferenzePeriodo}</span></div>` : ''}
-        ${c.note ? `<div class="cons-field full"><span class="fl">Note aggiuntive</span><span class="fv">${c.note}</span></div>` : ''}
-      </div>
+      <table class="art-table">
+        <thead>
+          <tr>
+            <th style="width:28px;">#</th>
+            <th>Tipologia</th>
+            <th style="width:110px;">Codice</th>
+            <th>Descrizione</th>
+            <th style="width:105px;">Tipo consegna</th>
+          </tr>
+        </thead>
+        <tbody>${artsHtml}</tbody>
+      </table>
+      ${noteExtra ? `<div class="note-box">${noteExtra}</div>` : ''}
       <div class="cons-check">
-        <span>□ Consegnato</span>
-        <span>□ Non consegnato — Motivo: ____________________________</span>
+        <span class="chk-item">&#9744; &nbsp;Consegnato</span>
+        <span class="chk-item">&#9744; &nbsp;Non consegnato &mdash; Motivo: <span class="motivo-line"></span></span>
       </div>
-    </div>
-  `).join('');
+    </div>`;
+  }).join('');
 
   const html = `<!DOCTYPE html>
 <html lang="it">
 <head>
 <meta charset="UTF-8"/>
-<title>Giornata ${fmtDate(g.data)}${g.squadra ? ' — ' + g.squadra : ''}</title>
+<title>Giornata ${fmtDate(g.data)}${g.squadra ? ' \u2014 ' + g.squadra : ''}</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: Arial, sans-serif; font-size: 11px; color: #111; background: #fff; }
-  .pdf-header { padding: 16px 20px 10px; border-bottom: 2px solid #111; margin-bottom: 14px; }
-  .pdf-header h1 { font-size: 18px; font-weight: 700; }
-  .pdf-header .sub { font-size: 12px; color: #444; margin-top: 3px; }
-  .cons-block { border: 1px solid #ccc; border-radius: 5px; margin: 0 20px 14px; padding: 10px 12px; page-break-inside: avoid; }
-  .cons-header { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px solid #eee; }
-  .cons-num { font-size: 20px; font-weight: 700; color: #555; min-width: 28px; }
-  .cons-nome { font-size: 14px; font-weight: 700; flex: 1; }
-  .cons-tipo { font-size: 10px; background: #eef2ff; color: #3b4fc8; padding: 2px 8px; border-radius: 10px; font-weight: 600; }
-  .cons-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 16px; margin-bottom: 8px; }
-  .cons-field { display: flex; gap: 6px; align-items: baseline; }
-  .cons-field.full { grid-column: 1 / -1; }
-  .fl { font-weight: 700; color: #555; white-space: nowrap; min-width: 110px; font-size: 10px; text-transform: uppercase; letter-spacing: .4px; }
-  .fv { color: #111; }
-  .cons-check { display: flex; gap: 28px; margin-top: 8px; padding-top: 8px; border-top: 1px dashed #ccc; font-size: 11px; color: #333; }
-  @media print { body { -webkit-print-color-adjust: exact; } }
+
+  .pdf-header { padding: 12px 16px 10px; border-bottom: 3px solid #111; margin-bottom: 14px; display:flex; align-items:baseline; gap:14px; }
+  .pdf-header h1 { font-size: 16px; font-weight: 700; }
+  .pdf-header .sub { font-size: 11px; color: #555; }
+  .pdf-header .sub-right { margin-left:auto; font-size:10px; color:#888; }
+
+  .cons-block { border: 1px solid #bbb; border-radius: 4px; margin: 0 14px 12px; page-break-inside: avoid; overflow: hidden; }
+
+  .cons-header { display: flex; align-items: stretch; background: #efefef; border-bottom: 1px solid #bbb; }
+  .cons-num { font-size: 20px; font-weight: 700; color: #333; min-width: 38px; display:flex; align-items:center; justify-content:center; border-right: 1px solid #bbb; padding: 6px 8px; background: #ddd; }
+  .cons-cliente { flex: 1; padding: 6px 10px; border-right: 1px solid #bbb; }
+  .cons-nome { font-size: 13px; font-weight: 700; }
+  .cons-addr { font-size: 10px; color: #444; margin-top: 2px; }
+  .cons-meta { padding: 6px 10px; font-size: 10px; color: #333; display: flex; flex-direction: column; justify-content: center; gap: 3px; min-width: 190px; }
+  .ml { font-weight: 700; color: #555; }
+
+  .art-table { width: 100%; border-collapse: collapse; font-size: 10.5px; }
+  .art-table thead tr { background: #e8eaf6; }
+  .art-table th { padding: 4px 8px; text-align: left; font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; color: #333; border-bottom: 1px solid #bbb; }
+  .art-table td { padding: 5px 8px; border-bottom: 1px solid #ececec; vertical-align: top; }
+  .art-table tbody tr:last-child td { border-bottom: none; }
+  .art-table tbody tr:nth-child(even) { background: #f7f7f7; }
+
+  .note-box { padding: 4px 10px; border-top: 1px dashed #ccc; font-size: 10px; color: #444; background: #fffde7; }
+  .nota { margin: 2px 0; }
+  .nota-label { font-weight: 700; color: #555; }
+
+  .cons-check { display: flex; gap: 24px; padding: 6px 10px; border-top: 1px dashed #bbb; font-size: 11px; color: #222; background: #f9f9f9; }
+  .chk-item { display: inline-flex; align-items: center; gap: 4px; }
+  .motivo-line { display: inline-block; border-bottom: 1px solid #555; min-width: 160px; margin-left: 4px; }
+
+  @media print {
+    body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .cons-block { break-inside: avoid; }
+  }
 </style>
 </head>
 <body>
 <div class="pdf-header">
-  <h1>Giornata del ${fmtDate(g.data)}${g.squadra ? ' — ' + g.squadra : ''}</h1>
+  <h1>Giornata del ${fmtDate(g.data)}${g.squadra ? ' \u2014 ' + g.squadra : ''}</h1>
   <div class="sub">${consegne.length} consegn${consegne.length === 1 ? 'a' : 'e'} programmat${consegne.length === 1 ? 'a' : 'e'}</div>
+  <div class="sub-right">Stampato il ${new Date().toLocaleDateString('it-IT')}</div>
 </div>
 ${righe}
 </body>
