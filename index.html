@@ -2251,12 +2251,12 @@ function stampaPDF() {
         ${(() => {
           const arts = c.articoli && c.articoli.length > 0 ? c.articoli
             : (c.tipoProdotto || c.codiceProdotto ? [{ tipoConsegna: c.tipoConsegna, tipo: c.tipoProdotto, codice: c.codiceProdotto, desc: c.descrizioneProdotto }] : []);
-          const tipoLabel = { consegna: 'Solo consegna', installazione: 'Installazione semplice', incasso: 'Installazione a incasso/muro' };
+          const tipoLabelArt = { consegna: 'Solo consegna', installazione: 'Installazione semplice', incasso: 'Installazione a incasso/muro' };
           if (arts.length === 0) return `<div class="cons-field full"><span class="fl">Prodotto</span><span class="fv">—</span></div>`;
           return arts.map((a, i) => `
             <div class="cons-field">
               <span class="fl">Art.${arts.length > 1 ? ' '+(i+1) : ''} — Tipo cons.</span>
-              <span class="fv">${tipoLabel[a.tipoConsegna] || 'Solo consegna'}</span>
+              <span class="fv">${tipoLabelArt[a.tipoConsegna] || 'Solo consegna'}</span>
             </div>
             <div class="cons-field">
               <span class="fl">Tipologia</span>
