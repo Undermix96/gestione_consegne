@@ -167,6 +167,7 @@ La preferenza manuale viene salvata in `localStorage` con chiave `gc_theme`. Al 
 --sq6: #f97316  /* arancio */
 --sq7: #ec4899  /* rosa */
 ```
+
 Ogni colore ha anche `--sqN-bg` per il background del badge. Le classi CSS `.sq-c0` ... `.sq-c7` applicano il colore corrispondente.
 
 ### Stato globale JS
@@ -200,6 +201,7 @@ const SQ_COLORS = 8;                // numero colori disponibili per squadre
 
 ### Vista Lista
 - Tabella con colonne: (expand), Stato, Prenotazione, Cliente, Città, Squadra, Tipo consegna, Prodotto, Preferenze periodo
+- La colonna **Prodotto** mostra il primo articolo (o lista compatta se più articoli): usare `articoliLabel(c)` per generare il testo
 - **Ordine nominativo: COGNOME Nome** (non Nome Cognome — questo è intenzionale e definitivo)
 - Ordinata per data prenotazione decrescente (più recenti in cima)
 - Filtri: ricerca per nome/cognome, stato, città
@@ -212,6 +214,7 @@ const SQ_COLORS = 8;                // numero colori disponibili per squadre
 - Sidebar sinistra: lista giornate ordinate per data, con dot colorato (verde=passata, blu=futura), badge con numero consegne, badge squadra colorato
 - Header giornata: data + badge squadra
 - Card consegne: drag&drop per riordinare (HTML5 Drag API), pulsante ✕ per rimuovere dalla giornata (la consegna torna "in attesa"), pulsante ✏️ per modificare
+- Le card mostrano gli articoli come pillole `.articolo-pill` nella riga sotto indirizzo/telefono
 - Pulsante "🖨️ Stampa PDF" appare nella view-bar quando una giornata è selezionata
 - Pulsante "+ Aggiungi consegna" apre modal di selezione con lista filtrata dei clienti "in attesa"
 - Pulsante "🗑 Elimina giornata" — impossibile eliminare se contiene consegne assegnate
@@ -228,15 +231,18 @@ Funzione `stampaPDF()`:
 - Layout A4, font Arial, nessuna dipendenza esterna
 - Intestazione: "Giornata del GG/MM/AAAA — Nome Squadra" + conteggio consegne
 - Una `.cons-block` per ogni consegna con: numero progressivo, Cognome Nome, tipo consegna, griglia di tutti i campi, checkbox "Consegnato / Non consegnato" in fondo
+- Gli articoli multipli vengono elencati separatamente (Art. 1, Art. 2, …) con Tipo, Codice, Descrizione ciascuno
 - `setTimeout(() => win.print(), 600)` — apre il dialogo di stampa automaticamente
 
 ### Modal consegna
 Campi del form (tutti in `f_[nome]`):
 - `f_dataPrenotazione` (date), `f_stato` (select), `f_nome`, `f_cognome`, `f_citta`, `f_indirizzo`
 - `f_tel1`, `f_tel2`, `f_tipoConsegna` (select: consegna/installazione/incasso), `f_raee` (select: si/no)
-- `f_tipoProdotto`, `f_codiceProdotto`, `f_descrizioneProdotto`, `f_piano`
-- `f_noteAbitazione` (textarea, max 170 caratteri), `f_preferenzePeriodo` (textarea, max 90 caratteri)
-- `f_giornataAssegnata` (select: giornata esistente), `f_fasciaOraria` (text), `f_note` (textarea, max 170 caratteri)
+- `f_piano`, `f_noteAbitazione` (textarea, max 170 caratteri), `f_preferenzePeriodo` (textarea, max 90 caratteri)
+- `f_giornataAssegnata_display` (sola lettura), `f_fasciaOraria` (text), `f_note` (textarea, max 170 caratteri)
+- **Sezione articoli** (`#articoliList`): lista dinamica di righe `.articolo-row`, ognuna con 3 input (`data-art="tipo"`, `data-art="codice"`, `data-art="desc"`) + pulsante ✕ per rimuovere la riga
+
+> ⚠️ I vecchi campi `f_tipoProdotto`, `f_codiceProdotto`, `f_descrizioneProdotto` **non esistono più nel DOM**. I dati prodotto sono gestiti esclusivamente tramite `#articoliList`.
 
 I tre textarea hanno contatori caratteri in tempo reale: gialli all'85% del limite, rossi al limite.
 
@@ -253,7 +259,7 @@ I tre textarea hanno contatori caratteri in tempo reale: gialli all'85% del limi
     {
       "id": "abc123",
       "dataPrenotazione": "2024-03-22",
-      "stato": "attesa",
+      "stato": "in_attesa",
       "nome": "Mario",
       "cognome": "Rossi",
       "citta": "Vicenza",
@@ -262,9 +268,10 @@ I tre textarea hanno contatori caratteri in tempo reale: gialli all'85% del limi
       "tel2": "",
       "tipoConsegna": "consegna",
       "raee": "no",
-      "tipoProdotto": "Lavatrice",
-      "codiceProdotto": "LG-WM001",
-      "descrizioneProdotto": "Lavatrice LG 7kg bianca",
+      "articoli": [
+        { "tipo": "Lavatrice", "codice": "LG-WM001", "desc": "Lavatrice LG 7kg bianca" },
+        { "tipo": "Asciugatrice", "codice": "LG-DR002", "desc": "Asciugatrice LG 7kg" }
+      ],
       "piano": "2",
       "noteAbitazione": "Scala stretta, no ascensore",
       "preferenzePeriodo": "Solo mattina",
@@ -291,14 +298,29 @@ I tre textarea hanno contatori caratteri in tempo reale: gialli all'85% del limi
 }
 ```
 
+### Campo `articoli` (nuovo — sostituisce i vecchi campi singoli)
+Ogni elemento dell'array ha la struttura:
+```json
+{ "tipo": "string", "codice": "string", "desc": "string" }
+```
+Tutti i campi sono opzionali (stringa vuota se non compilati). Un record può avere zero o più articoli.
+
+### Retrocompatibilità campi vecchi (`tipoProdotto`, `codiceProdotto`, `descrizioneProdotto`)
+I record scritti con la versione precedente possono ancora avere i tre campi singoli invece di `articoli`. Il frontend li legge e li visualizza correttamente ovunque tramite questa logica:
+```javascript
+const arts = c.articoli && c.articoli.length > 0 ? c.articoli
+  : (c.tipoProdotto ? [{ tipo: c.tipoProdotto, codice: c.codiceProdotto, desc: c.descrizioneProdotto }] : []);
+```
+Al primo salvataggio di una consegna migrata, i campi vecchi vengono rimossi e sostituiti da `articoli`. Non è necessaria una migrazione batch.
+
 ### Valori enum
-- `stato`: `"attesa"` | `"da_confermare"` | `"programmata"` | `"completata"` | `"annullata"` | `"da_riprogrammare"`
+- `stato`: `"in_attesa"` | `"da_confermare"` | `"programmata"` | `"completata"` | `"annullata"` | `"da_riprogrammare"`
 - `tipoConsegna`: `"consegna"` | `"installazione"` | `"incasso"`
 - `raee`: `"si"` | `"no"`
 - `colorIdx`: `0`..`7` (indice nella palette `--sqN`)
 
 ### Logica stati automatica
-Al caricamento (`autoCompleteStati()`): 
+Al caricamento (`autoCompleteStati()`):
 1. Se una consegna ha `stato === "programmata"` e `giornoConsegna` è nel passato → `stato` viene aggiornato a `"completata"` automaticamente e salvato.
 2. Se una consegna ha `stato === "attesa"` → `stato` viene aggiornato a `"in_attesa"` per retrocompatibilità.
 
@@ -310,8 +332,8 @@ Aggiunto dal server solo nelle risposte HTTP, **mai scritto su disco**. Il clien
 ## 7. Flusso operativo tipico
 
 ### Aggiungere una consegna
-1. Vista Lista → "Nuova consegna" → compila form → Salva
-2. La consegna appare in lista con stato "In attesa" (nuovo stato: in_attesa)
+1. Vista Lista → "Nuova consegna" → compila form → aggiungi uno o più articoli con "＋ Aggiungi articolo" → Salva
+2. La consegna appare in lista con stato "In attesa"
 
 ### Programmare una consegna
 1. Vista Giornate → seleziona o crea una giornata → "Aggiungi consegna"
@@ -375,23 +397,26 @@ Cartella `python_embed/` contiene Python 3.13 embeddable (Windows 64-bit).
 | Stessa data permessa con squadre diverse | Richiesta esplicita per gestire più squadre parallele |
 | Schermata bloccante senza istruzioni bat | I client non usano il bat, solo il browser diretto |
 | Tema auto da OS + switch manuale | Usabilità su monitor diversi, salvato in localStorage |
+| `articoli[]` invece di 3 campi singoli | Supporto a più prodotti per consegna — retrocompatibile coi record vecchi |
 
 ---
 
-## 12. Funzionalità in lista (non ancora implementate)
+## 12. Funzionalità implementate
 
-- **Esportazione PDF** della giornata (implementata con `stampaPDF()`) ✅
+- **Esportazione PDF** della giornata (`stampaPDF()`) ✅
+- **Articoli multipli per consegna** (`articoli[]`) ✅
 - **Esportazione CSV/Excel** — non richiesta
-- Nessuna altra funzionalità pendente al momento della stesura di questo documento
 
 ---
 
 ## 13. Note per modifiche future
 
-- **Non usare `innerHTML` con dati utente non sanitizzati** — attualmente i dati vengono inseriti direttamente. Se si aggiunge autenticazione o dati da fonti esterne, aggiungere sanitizzazione XSS.
+- **Non usare `innerHTML` con dati utente non sanitizzati** — attualmente i dati vengono inseriti direttamente. Se si aggiunge autenticazione o dati da fonti esterne, aggiungere sanitizzazione XSS. La funzione `escHtml()` è già disponibile per l'escaping nei template dinamici (usata nelle righe articoli).
 - **Non aggiungere dipendenze NPM/pip** senza aggiornare anche `python_embed/` — i PC non hanno accesso a internet durante l'uso (o comunque non si deve assumere che ce l'abbiano).
 - **Non cambiare la struttura di `dati.json`** senza garantire retrocompatibilità — i file esistenti devono continuare a funzionare. Usare valori di default con `|| []` / `|| ''` per i nuovi campi.
 - **La porta 8742 non deve cambiare** — è configurata nel firewall di ogni PC server.
 - **Il file `server.lock`** non deve mai rimanere orfano — `crash_server()` e il blocco `finally` in `main` lo rimuovono sempre. In caso di kill forzato del processo, il lock stale viene rilevato e rimosso al prossimo avvio da `avvia.ps1`.
 - **`expandedRowId`** viene resettato a `null` se la riga viene eliminata — gestirlo in `deleteCurrentConsegna()` se necessario.
 - L'ordine **Cognome Nome** è intenzionale e definitivo. Non invertire.
+- **Non ripristinare `f_tipoProdotto` / `f_codiceProdotto` / `f_descrizioneProdotto`** come campi singoli nel DOM — questi campi non esistono più. Tutta la logica prodotti passa da `#articoliList` e dal campo `articoli[]` nel DB.
+- **`articoliLabel(c)`** è la funzione unica per ricavare una stringa leggibile degli articoli di una consegna (usarla ovunque serva testo breve, es. colonna tabella). Per il dettaglio completo, iterare `c.articoli` direttamente.
