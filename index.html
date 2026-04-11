@@ -653,7 +653,7 @@
   .articoli-list { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; }
   .articolo-row {
     display: grid;
-    grid-template-columns: 1fr 1fr 2fr auto;
+    grid-template-columns: 160px 1fr 1fr 2fr auto;
     gap: 8px;
     align-items: center;
     background: var(--bg);
@@ -675,6 +675,27 @@
   }
   .articolo-row input:focus { border-bottom-color: var(--accent); }
   .articolo-row input::placeholder { color: var(--muted); }
+  .articolo-row select {
+    background: transparent;
+    border: none;
+    border-bottom: 1px solid var(--border);
+    color: var(--text);
+    font-size: 12px;
+    font-family: 'DM Sans', sans-serif;
+    outline: none;
+    padding: 4px 2px;
+    cursor: pointer;
+    transition: border-color .2s;
+    border-radius: 0;
+    appearance: none;
+    -webkit-appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%236b7394'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 2px center;
+    padding-right: 14px;
+  }
+  .articolo-row select:focus { border-bottom-color: var(--accent); }
+  .articolo-row select option { background: var(--surface2); color: var(--text); }
   .btn-add-articolo {
     display: inline-flex; align-items: center; gap: 5px;
     padding: 6px 14px;
@@ -692,7 +713,7 @@
   .btn-add-articolo:hover { border-color: var(--accent); color: var(--accent); background: var(--sched-bg); }
   .articoli-labels {
     display: grid;
-    grid-template-columns: 1fr 1fr 2fr auto;
+    grid-template-columns: 160px 1fr 1fr 2fr auto;
     gap: 8px;
     padding: 0 10px;
     font-size: 10px;
@@ -1062,14 +1083,6 @@
           <input type="tel" id="f_tel2" placeholder="+39 …"/>
         </div>
         <div class="form-group">
-          <label>Tipo consegna</label>
-          <select id="f_tipoConsegna">
-            <option value="consegna">Solo consegna</option>
-            <option value="installazione">Installazione semplice</option>
-            <option value="incasso">Installazione a incasso/muro</option>
-          </select>
-        </div>
-        <div class="form-group">
           <label>Ritiro RAEE</label>
           <select id="f_raee">
             <option value="no">No</option>
@@ -1079,7 +1092,7 @@
         <div class="form-group full" id="articoliSection">
           <label>Articoli da consegnare</label>
           <div class="articoli-labels">
-            <span>Tipologia</span><span>Codice</span><span>Descrizione</span><span></span>
+            <span>Tipo consegna</span><span>Tipologia prodotto</span><span>Codice</span><span>Descrizione</span><span></span>
           </div>
           <div class="articoli-list" id="articoliList"></div>
           <button type="button" class="btn-add-articolo" onclick="addArticoloRow()">＋ Aggiungi articolo</button>
@@ -1473,7 +1486,7 @@ function renderLista() {
       <td><strong>${c.cognome || ''} ${c.nome || ''}</strong></td>
       <td class="muted">${c.citta || '—'}</td>
       <td>${squadraBadgeForConsegna(c.id)}</td>
-      <td>${tipoBadge(c.tipoConsegna)}</td>
+      <td>${tipiConsegnaBadges(c)}</td>
       <td class="muted">${articoliLabel(c)}</td>
       <td class="muted" style="font-family:'DM Mono',monospace">${fmtDate(c.giornoConsegna)}</td>
       <td class="muted">${c.preferenzePeriodo || '—'}</td>
@@ -1493,9 +1506,12 @@ function renderLista() {
         <div class="detail-field"><label>RAEE</label><span class="${c.raee === 'si' ? 'raee-yes' : 'raee-no'}">${c.raee === 'si' ? '✅ Sì' : '✗ No'}</span></div>
         <div class="detail-field" style="grid-column:1/-1"><label>Articoli</label><span>${(() => {
           const arts = c.articoli && c.articoli.length > 0 ? c.articoli
-            : (c.tipoProdotto || c.codiceProdotto ? [{ tipo: c.tipoProdotto, codice: c.codiceProdotto, desc: c.descrizioneProdotto }] : []);
+            : (c.tipoProdotto || c.codiceProdotto ? [{ tipoConsegna: c.tipoConsegna, tipo: c.tipoProdotto, codice: c.codiceProdotto, desc: c.descrizioneProdotto }] : []);
           if (arts.length === 0) return '—';
-          return arts.map((a,i) => `<span class="articolo-pill">📦 ${[a.tipo,a.codice,a.desc].filter(Boolean).join(' · ') || '—'}</span>`).join(' ');
+          return arts.map(a => {
+            const parts = [a.tipo, a.codice, a.desc].filter(Boolean).join(' · ') || '—';
+            return `<span class="articolo-pill">${tipoBadge(a.tipoConsegna || 'consegna')} 📦 ${parts}</span>`;
+          }).join(' ');
         })()}</span></div>
         <div class="detail-field"><label>Note abitazione</label><span>${c.noteAbitazione || '—'}</span></div>
         <div class="detail-field"><label>Preferenze periodo</label><span>${c.preferenzePeriodo || '—'}</span></div>
@@ -1622,9 +1638,12 @@ function renderGiornata(id) {
 
 function deliveryCard(c, num, gid) {
   const arts = c.articoli && c.articoli.length > 0 ? c.articoli
-    : (c.tipoProdotto ? [{ tipo: c.tipoProdotto, codice: c.codiceProdotto, desc: c.descrizioneProdotto }] : []);
+    : (c.tipoProdotto ? [{ tipoConsegna: c.tipoConsegna, tipo: c.tipoProdotto, codice: c.codiceProdotto, desc: c.descrizioneProdotto }] : []);
   const artHtml = arts.length > 0
-    ? arts.map(a => `<span class="articolo-pill">📦 ${[a.tipo,a.codice,a.desc].filter(Boolean).join(' · ') || '—'}</span>`).join(' ')
+    ? arts.map(a => {
+        const label = [a.tipo, a.codice, a.desc].filter(Boolean).join(' · ') || '—';
+        return `<span class="articolo-pill">${tipoBadge(a.tipoConsegna || 'consegna')} ${label}</span>`;
+      }).join(' ')
     : '<span style="color:var(--muted)">—</span>';
   return `
   <div class="delivery-card" draggable="true" data-id="${c.id}" data-gid="${gid}">
@@ -1635,7 +1654,6 @@ function deliveryCard(c, num, gid) {
       <div class="card-sub">📍 ${c.citta || ''}${c.indirizzo ? ', ' + c.indirizzo : ''} &nbsp;·&nbsp; 📞 ${c.tel1 || '—'} &nbsp;·&nbsp; 🕐 ${c.fasciaOraria || 'orario n.d.'}</div>
       <div class="card-sub" style="margin-top:4px;display:flex;flex-wrap:wrap;gap:4px;">${artHtml}</div>
     </div>
-    <div class="card-tipo">${tipoBadge(c.tipoConsegna)}</div>
     <div class="card-actions">
       <button class="icon-btn edit" title="Modifica" onclick="openEditConsegnaModal('${c.id}')">✏️</button>
       <button class="icon-btn" title="Rimuovi dalla giornata" onclick="removeFromGiornata('${c.id}','${gid}')">✕</button>
@@ -1862,7 +1880,7 @@ function openEditConsegnaModal(id) {
 
 function clearConsegnaForm() {
   ['dataPrenotazione','stato','nome','cognome','citta','indirizzo','tel1','tel2',
-   'tipoConsegna','raee','piano','noteAbitazione','preferenzePeriodo','fasciaOraria','note'
+   'raee','piano','noteAbitazione','preferenzePeriodo','fasciaOraria','note'
   ].forEach(f => {
     const el = document.getElementById('f_' + f);
     if (!el) return;
@@ -1875,12 +1893,20 @@ function clearConsegnaForm() {
 }
 
 // ---- Gestione articoli dinamici ----
-function addArticoloRow(tipo='', codice='', desc='') {
+function addArticoloRow(tipo='', codice='', desc='', tipoConsegna='consegna') {
   const list = document.getElementById('articoliList');
-  const idx = list.children.length;
   const row = document.createElement('div');
   row.className = 'articolo-row';
+  const opts = [
+    ['consegna',      '📦 Solo consegna'],
+    ['installazione', '🔧 Installaz. semplice'],
+    ['incasso',       '🔩 Incasso/muro'],
+  ];
+  const selectHtml = opts.map(([v,l]) =>
+    `<option value="${v}"${v === tipoConsegna ? ' selected' : ''}>${l}</option>`
+  ).join('');
   row.innerHTML = `
+    <select data-art="tipoConsegna">${selectHtml}</select>
     <input type="text" placeholder="es. Lavatrice, TV…" value="${escHtml(tipo)}" data-art="tipo"/>
     <input type="text" placeholder="SKU / Codice" value="${escHtml(codice)}" data-art="codice"/>
     <input type="text" placeholder="Descrizione estesa…" value="${escHtml(desc)}" data-art="desc"/>
@@ -1894,6 +1920,8 @@ function removeArticoloRow(btn) {
   if (list.children.length <= 1) {
     // Svuota invece di rimuovere l'ultima riga
     btn.closest('.articolo-row').querySelectorAll('input').forEach(i => i.value = '');
+    const sel = btn.closest('.articolo-row').querySelector('select[data-art="tipoConsegna"]');
+    if (sel) sel.value = 'consegna';
     return;
   }
   btn.closest('.articolo-row').remove();
@@ -1907,10 +1935,11 @@ function getArticoliFromForm() {
   const rows = document.querySelectorAll('#articoliList .articolo-row');
   const result = [];
   rows.forEach(row => {
-    const tipo  = row.querySelector('[data-art="tipo"]').value.trim();
-    const codice= row.querySelector('[data-art="codice"]').value.trim();
-    const desc  = row.querySelector('[data-art="desc"]').value.trim();
-    if (tipo || codice || desc) result.push({ tipo, codice, desc });
+    const tipoConsegna = row.querySelector('[data-art="tipoConsegna"]')?.value || 'consegna';
+    const tipo   = row.querySelector('[data-art="tipo"]').value.trim();
+    const codice = row.querySelector('[data-art="codice"]').value.trim();
+    const desc   = row.querySelector('[data-art="desc"]').value.trim();
+    if (tipo || codice || desc) result.push({ tipoConsegna, tipo, codice, desc });
   });
   return result;
 }
@@ -1923,10 +1952,26 @@ function articoliLabel(c) {
   return c.tipoProdotto || '—';
 }
 
+// Restituisce i tipoBadge unici di tutti gli articoli di una consegna
+function tipiConsegnaBadges(c) {
+  let tipi;
+  if (c.articoli && c.articoli.length > 0) {
+    // Deduplicati, nell'ordine di "peso" (incasso > installazione > consegna)
+    const order = ['incasso','installazione','consegna'];
+    const seen = new Set(c.articoli.map(a => a.tipoConsegna || 'consegna'));
+    tipi = order.filter(t => seen.has(t));
+  } else if (c.tipoConsegna) {
+    tipi = [c.tipoConsegna];
+  } else {
+    tipi = ['consegna'];
+  }
+  return tipi.map(t => tipoBadge(t)).join(' ');
+}
+
 function fillConsegnaForm(c) {
   // Campi editabili (inclusi data, stato, fascia oraria)
   ['dataPrenotazione','stato','nome','cognome','citta','indirizzo','tel1','tel2',
-   'tipoConsegna','raee','piano','noteAbitazione','preferenzePeriodo','fasciaOraria','note'
+   'raee','piano','noteAbitazione','preferenzePeriodo','fasciaOraria','note'
   ].forEach(f => {
     const el = document.getElementById('f_' + f);
     if (!el) return;
@@ -1938,10 +1983,10 @@ function fillConsegnaForm(c) {
   const list = document.getElementById('articoliList');
   list.innerHTML = '';
   if (c.articoli && c.articoli.length > 0) {
-    c.articoli.forEach(a => addArticoloRow(a.tipo, a.codice, a.desc));
+    c.articoli.forEach(a => addArticoloRow(a.tipo, a.codice, a.desc, a.tipoConsegna || 'consegna'));
   } else if (c.tipoProdotto || c.codiceProdotto || c.descrizioneProdotto) {
-    // Retrocompatibilità: migra i vecchi campi singoli
-    addArticoloRow(c.tipoProdotto, c.codiceProdotto, c.descrizioneProdotto);
+    // Retrocompatibilità: migra i vecchi campi singoli (tipoConsegna era a livello di consegna)
+    addArticoloRow(c.tipoProdotto, c.codiceProdotto, c.descrizioneProdotto, c.tipoConsegna || 'consegna');
   } else {
     addArticoloRow();
   }
@@ -1963,7 +2008,7 @@ function saveConsegna() {
 
   // Legge i campi editabili del form
   const editableFields = ['dataPrenotazione','stato','nome','cognome','citta','indirizzo','tel1','tel2',
-    'tipoConsegna','raee','piano','noteAbitazione','preferenzePeriodo','fasciaOraria','note'];
+    'raee','piano','noteAbitazione','preferenzePeriodo','fasciaOraria','note'];
   const data = {};
   editableFields.forEach(f => {
     const el = document.getElementById('f_' + f);
@@ -2189,8 +2234,6 @@ function stampaPDF() {
     .map(cid => db.consegne.find(c => c.id === cid))
     .filter(Boolean);
 
-  const tipoLabel = { consegna: 'Solo consegna', installazione: 'Installazione semplice', incasso: 'Installazione a incasso/muro' };
-
   const righe = consegne.map((c, i) => `
     <div class="cons-block">
       <div class="cons-header">
@@ -2207,11 +2250,16 @@ function stampaPDF() {
         <div class="cons-field"><span class="fl">Ritiro RAEE</span><span class="fv">${c.raee === 'si' ? '✓ Sì' : 'No'}</span></div>
         ${(() => {
           const arts = c.articoli && c.articoli.length > 0 ? c.articoli
-            : (c.tipoProdotto || c.codiceProdotto ? [{ tipo: c.tipoProdotto, codice: c.codiceProdotto, desc: c.descrizioneProdotto }] : []);
+            : (c.tipoProdotto || c.codiceProdotto ? [{ tipoConsegna: c.tipoConsegna, tipo: c.tipoProdotto, codice: c.codiceProdotto, desc: c.descrizioneProdotto }] : []);
+          const tipoLabel = { consegna: 'Solo consegna', installazione: 'Installazione semplice', incasso: 'Installazione a incasso/muro' };
           if (arts.length === 0) return `<div class="cons-field full"><span class="fl">Prodotto</span><span class="fv">—</span></div>`;
           return arts.map((a, i) => `
-            <div class="cons-field${arts.length > 1 ? ' art-block' : ''}">
-              <span class="fl">Art.${arts.length > 1 ? ' '+(i+1) : ''} — Tipo</span>
+            <div class="cons-field">
+              <span class="fl">Art.${arts.length > 1 ? ' '+(i+1) : ''} — Tipo cons.</span>
+              <span class="fv">${tipoLabel[a.tipoConsegna] || 'Solo consegna'}</span>
+            </div>
+            <div class="cons-field">
+              <span class="fl">Tipologia</span>
               <span class="fv">${a.tipo || '—'}</span>
             </div>
             <div class="cons-field">

@@ -201,7 +201,7 @@ const SQ_COLORS = 8;                // numero colori disponibili per squadre
 
 ### Vista Lista
 - Tabella con colonne: (expand), Stato, Prenotazione, Cliente, Città, Squadra, Tipo consegna, Prodotto, Preferenze periodo
-- La colonna **Prodotto** mostra il primo articolo (o lista compatta se più articoli): usare `articoliLabel(c)` per generare il testo
+- La colonna **Tipo consegna** mostra i badge deduplicati di tutti gli articoli tramite `tipiConsegnaBadges(c)`, ordinati per "peso" (incasso > installazione > consegna). Se una consegna ha articoli misti, appaiono più badge affiancati.
 - **Ordine nominativo: COGNOME Nome** (non Nome Cognome — questo è intenzionale e definitivo)
 - Ordinata per data prenotazione decrescente (più recenti in cima)
 - Filtri: ricerca per nome/cognome, stato, città
@@ -237,12 +237,17 @@ Funzione `stampaPDF()`:
 ### Modal consegna
 Campi del form (tutti in `f_[nome]`):
 - `f_dataPrenotazione` (date), `f_stato` (select), `f_nome`, `f_cognome`, `f_citta`, `f_indirizzo`
-- `f_tel1`, `f_tel2`, `f_tipoConsegna` (select: consegna/installazione/incasso), `f_raee` (select: si/no)
+- `f_tel1`, `f_tel2`, `f_raee` (select: si/no)
 - `f_piano`, `f_noteAbitazione` (textarea, max 170 caratteri), `f_preferenzePeriodo` (textarea, max 90 caratteri)
 - `f_giornataAssegnata_display` (sola lettura), `f_fasciaOraria` (text), `f_note` (textarea, max 170 caratteri)
-- **Sezione articoli** (`#articoliList`): lista dinamica di righe `.articolo-row`, ognuna con 3 input (`data-art="tipo"`, `data-art="codice"`, `data-art="desc"`) + pulsante ✕ per rimuovere la riga
+- **Sezione articoli** (`#articoliList`): lista dinamica di righe `.articolo-row`, ognuna con 5 colonne:
+  - `data-art="tipoConsegna"` (select: consegna / installazione / incasso)
+  - `data-art="tipo"` (input text — tipologia prodotto)
+  - `data-art="codice"` (input text — SKU/codice)
+  - `data-art="desc"` (input text — descrizione estesa)
+  - pulsante ✕ per rimuovere la riga
 
-> ⚠️ I vecchi campi `f_tipoProdotto`, `f_codiceProdotto`, `f_descrizioneProdotto` **non esistono più nel DOM**. I dati prodotto sono gestiti esclusivamente tramite `#articoliList`.
+> ⚠️ `f_tipoConsegna` **non esiste più nel DOM**. Il tipo di consegna è per-articolo, non per-consegna. Anche `f_tipoProdotto`, `f_codiceProdotto`, `f_descrizioneProdotto` non esistono più.
 
 I tre textarea hanno contatori caratteri in tempo reale: gialli all'85% del limite, rossi al limite.
 
@@ -269,8 +274,8 @@ I tre textarea hanno contatori caratteri in tempo reale: gialli all'85% del limi
       "tipoConsegna": "consegna",
       "raee": "no",
       "articoli": [
-        { "tipo": "Lavatrice", "codice": "LG-WM001", "desc": "Lavatrice LG 7kg bianca" },
-        { "tipo": "Asciugatrice", "codice": "LG-DR002", "desc": "Asciugatrice LG 7kg" }
+        { "tipoConsegna": "incasso", "tipo": "TV", "codice": "SONY-X90L", "desc": "TV Sony 55\" OLED" },
+        { "tipoConsegna": "installazione", "tipo": "Lavatrice", "codice": "LG-WM001", "desc": "Lavatrice LG 7kg bianca" }
       ],
       "piano": "2",
       "noteAbitazione": "Scala stretta, no ascensore",
@@ -298,20 +303,22 @@ I tre textarea hanno contatori caratteri in tempo reale: gialli all'85% del limi
 }
 ```
 
-### Campo `articoli` (nuovo — sostituisce i vecchi campi singoli)
+### Campo `articoli` (sostituisce i vecchi campi singoli)
 Ogni elemento dell'array ha la struttura:
 ```json
-{ "tipo": "string", "codice": "string", "desc": "string" }
+{ "tipoConsegna": "consegna|installazione|incasso", "tipo": "string", "codice": "string", "desc": "string" }
 ```
-Tutti i campi sono opzionali (stringa vuota se non compilati). Un record può avere zero o più articoli.
+Tutti i campi sono opzionali (stringa vuota se non compilati). `tipoConsegna` default a `"consegna"` se assente. Un record può avere zero o più articoli.
 
-### Retrocompatibilità campi vecchi (`tipoProdotto`, `codiceProdotto`, `descrizioneProdotto`)
-I record scritti con la versione precedente possono ancora avere i tre campi singoli invece di `articoli`. Il frontend li legge e li visualizza correttamente ovunque tramite questa logica:
+> ⚠️ `tipoConsegna` **non esiste più come campo di primo livello** della consegna. È esclusivamente un attributo per-articolo. Questo permette consegne miste (es. TV a incasso + lavatrice con installazione semplice allo stesso cliente).
+
+### Retrocompatibilità campi vecchi (`tipoProdotto`, `codiceProdotto`, `descrizioneProdotto`, `tipoConsegna`)
+I record scritti con versioni precedenti possono avere i tre campi singoli e/o `tipoConsegna` a livello di consegna invece di `articoli`. Il frontend li legge e li visualizza correttamente ovunque tramite questa logica:
 ```javascript
 const arts = c.articoli && c.articoli.length > 0 ? c.articoli
-  : (c.tipoProdotto ? [{ tipo: c.tipoProdotto, codice: c.codiceProdotto, desc: c.descrizioneProdotto }] : []);
+  : (c.tipoProdotto ? [{ tipoConsegna: c.tipoConsegna, tipo: c.tipoProdotto, codice: c.codiceProdotto, desc: c.descrizioneProdotto }] : []);
 ```
-Al primo salvataggio di una consegna migrata, i campi vecchi vengono rimossi e sostituiti da `articoli`. Non è necessaria una migrazione batch.
+Al primo salvataggio di una consegna migrata, i campi vecchi vengono rimossi e sostituiti da `articoli[]` con `tipoConsegna` dentro ogni articolo. Non è necessaria una migrazione batch.
 
 ### Valori enum
 - `stato`: `"in_attesa"` | `"da_confermare"` | `"programmata"` | `"completata"` | `"annullata"` | `"da_riprogrammare"`
@@ -398,6 +405,7 @@ Cartella `python_embed/` contiene Python 3.13 embeddable (Windows 64-bit).
 | Schermata bloccante senza istruzioni bat | I client non usano il bat, solo il browser diretto |
 | Tema auto da OS + switch manuale | Usabilità su monitor diversi, salvato in localStorage |
 | `articoli[]` invece di 3 campi singoli | Supporto a più prodotti per consegna — retrocompatibile coi record vecchi |
+| `tipoConsegna` per-articolo (non per-consegna) | Consegne miste: prodotti diversi possono avere tipo installazione diverso |
 
 ---
 
@@ -418,5 +426,5 @@ Cartella `python_embed/` contiene Python 3.13 embeddable (Windows 64-bit).
 - **Il file `server.lock`** non deve mai rimanere orfano — `crash_server()` e il blocco `finally` in `main` lo rimuovono sempre. In caso di kill forzato del processo, il lock stale viene rilevato e rimosso al prossimo avvio da `avvia.ps1`.
 - **`expandedRowId`** viene resettato a `null` se la riga viene eliminata — gestirlo in `deleteCurrentConsegna()` se necessario.
 - L'ordine **Cognome Nome** è intenzionale e definitivo. Non invertire.
-- **Non ripristinare `f_tipoProdotto` / `f_codiceProdotto` / `f_descrizioneProdotto`** come campi singoli nel DOM — questi campi non esistono più. Tutta la logica prodotti passa da `#articoliList` e dal campo `articoli[]` nel DB.
-- **`articoliLabel(c)`** è la funzione unica per ricavare una stringa leggibile degli articoli di una consegna (usarla ovunque serva testo breve, es. colonna tabella). Per il dettaglio completo, iterare `c.articoli` direttamente.
+- **Non ripristinare `f_tipoProdotto` / `f_codiceProdotto` / `f_descrizioneProdotto` / `f_tipoConsegna`** come campi singoli nel DOM — questi campi non esistono più. Tutta la logica prodotti e tipo consegna passa da `#articoliList` e dal campo `articoli[]` nel DB.
+- **`tipiConsegnaBadges(c)`** è la funzione per mostrare i badge tipo-consegna nella lista (deduplicati). **`articoliLabel(c)`** è per testo breve (colonna prodotto). Per il dettaglio completo, iterare `c.articoli` direttamente.
