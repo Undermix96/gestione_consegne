@@ -467,6 +467,11 @@
   }
   .icon-btn:hover { border-color: var(--cancel); color: var(--cancel); background: var(--cancel-bg); }
   .icon-btn.edit:hover { border-color: var(--accent); color: var(--accent); background: var(--sched-bg); }
+  .icon-btn.done:hover { border-color: var(--done); color: var(--done); background: var(--done-bg); }
+  .delivery-card.card-completata { border-color: var(--done); opacity: .82; }
+  .delivery-card.card-completata .card-num { color: var(--done); }
+  .badge-completata { font-size: 11px; font-weight: 600; color: var(--done); margin-left: 8px; }
+  .card-note { color: var(--accent2) !important; font-style: italic; }
 
   .empty-state {
     text-align: center;
@@ -957,8 +962,7 @@
         <input type="text" id="searchInput" placeholder="🔍 Cerca per nome…" oninput="renderLista()" style="width:200px"/>
         <select id="filterStato" onchange="renderLista()">
           <option value="">Tutti gli stati</option>
-          <option value="attesa">In attesa</option>
-          <option value="in_attesa">In attesa (nuovo)</option>
+          <option value="in_attesa">In attesa</option>
           <option value="da_confermare">Da confermare</option>
           <option value="programmata">Programmata</option>
           <option value="completata">Completata</option>
@@ -979,10 +983,10 @@
               <th>Prenotazione</th>
               <th>Cliente</th>
               <th>Città</th>
+              <th>Giorno programmato</th>
               <th>Squadra</th>
               <th>Tipo consegna</th>
               <th>Prodotto</th>
-              <th>Giorno programmato</th>
               <th>Preferenze periodo</th>
             </tr>
           </thead>
@@ -1437,12 +1441,7 @@ function renderAll() {
 function autoCompleteStati() {
   let changed = false;
   db.consegne.forEach(c => {
-    // Mantieni la logica esistente per retrocompatibilità
-    if (c.stato === 'programmata' && c.giornoConsegna && isPast(c.giornoConsegna)) {
-      c.stato = 'completata';
-      changed = true;
-    }
-    // Aggiungi anche la logica per il nuovo stato 'attesa' -> 'in_attesa'
+    // Migrazione stato legacy 'attesa' -> 'in_attesa'
     if (c.stato === 'attesa') {
       c.stato = 'in_attesa';
       changed = true;
@@ -1485,10 +1484,10 @@ function renderLista() {
       <td class="muted" style="font-family:'DM Mono',monospace">${fmtDate(c.dataPrenotazione)}</td>
       <td><strong>${c.cognome || ''} ${c.nome || ''}</strong></td>
       <td class="muted">${c.citta || '—'}</td>
+      <td class="muted" style="font-family:'DM Mono',monospace">${fmtDate(c.giornoConsegna)}</td>
       <td>${squadraBadgeForConsegna(c.id)}</td>
       <td>${tipiConsegnaBadges(c)}</td>
       <td class="muted">${articoliLabel(c)}</td>
-      <td class="muted" style="font-family:'DM Mono',monospace">${fmtDate(c.giornoConsegna)}</td>
       <td class="muted">${c.preferenzePeriodo || '—'}</td>
     `;
     tr.addEventListener('click', () => toggleRowDetail(c.id, tr));
@@ -1645,16 +1644,22 @@ function deliveryCard(c, num, gid) {
         return `<span class="articolo-pill">${tipoBadge(a.tipoConsegna || 'consegna')} ${label}</span>`;
       }).join(' ')
     : '<span style="color:var(--muted)">—</span>';
+  const isCompletata = c.stato === 'completata';
+  const noteHtml = c.note
+    ? `<div class="card-sub card-note" style="margin-top:5px;">📝 ${c.note}</div>`
+    : '';
   return `
-  <div class="delivery-card" draggable="true" data-id="${c.id}" data-gid="${gid}">
+  <div class="delivery-card${isCompletata ? ' card-completata' : ''}" draggable="true" data-id="${c.id}" data-gid="${gid}">
     <span class="drag-handle">⠿</span>
     <span class="card-num">${num}</span>
     <div class="card-body">
-      <div class="card-name">${c.cognome || ''} ${c.nome || ''}</div>
+      <div class="card-name">${c.cognome || ''} ${c.nome || ''}${isCompletata ? ' <span class="badge-completata">✅ Consegnata</span>' : ''}</div>
       <div class="card-sub">📍 ${c.citta || ''}${c.indirizzo ? ', ' + c.indirizzo : ''} &nbsp;·&nbsp; 📞 ${c.tel1 || '—'} &nbsp;·&nbsp; 🕐 ${c.fasciaOraria || 'orario n.d.'}</div>
       <div class="card-sub" style="margin-top:4px;display:flex;flex-wrap:wrap;gap:4px;">${artHtml}</div>
+      ${noteHtml}
     </div>
     <div class="card-actions">
+      ${!isCompletata ? `<button class="icon-btn done" title="Segna come consegnata" onclick="segnaConsegnata('${c.id}','${gid}')">✅</button>` : ''}
       <button class="icon-btn edit" title="Modifica" onclick="openEditConsegnaModal('${c.id}')">✏️</button>
       <button class="icon-btn" title="Rimuovi dalla giornata" onclick="removeFromGiornata('${c.id}','${gid}')">✕</button>
     </div>
@@ -1731,7 +1736,18 @@ function removeFromGiornata(cid, gid) {
   toast('Consegna rimossa dalla giornata → tornata in attesa');
 }
 
-function deleteGiornata(gid) {
+function segnaConsegnata(cid, gid) {
+  const c = db.consegne.find(x => x.id === cid);
+  if (!c) return;
+  c.stato = 'completata';
+  markDirty();
+  remoteLog(`Consegna completata: ${c.cognome || ''} ${c.nome || ''}`);
+  renderGiornata(gid);
+  renderLista();
+  toast('Consegna segnata come completata ✅');
+}
+
+
   const g = db.giornate.find(x => x.id === gid);
   if (!g) return;
   
@@ -2304,30 +2320,34 @@ function stampaPDF() {
   .pdf-header .sub { font-size: 11px; color: #555; }
   .pdf-header .sub-right { margin-left:auto; font-size:10px; color:#888; }
 
-  .cons-block { border: 1px solid #bbb; border-radius: 4px; margin: 0 14px 12px; page-break-inside: avoid; overflow: hidden; }
+  .cons-block { border: 2px solid #555; border-radius: 4px; margin: 0 14px 14px; page-break-inside: avoid; overflow: hidden; }
 
-  .cons-header { display: flex; align-items: stretch; background: #efefef; border-bottom: 1px solid #bbb; }
-  .cons-num { font-size: 20px; font-weight: 700; color: #333; min-width: 38px; display:flex; align-items:center; justify-content:center; border-right: 1px solid #bbb; padding: 6px 8px; background: #ddd; }
-  .cons-cliente { flex: 1; padding: 6px 10px; border-right: 1px solid #bbb; }
-  .cons-nome { font-size: 13px; font-weight: 700; }
-  .cons-addr { font-size: 10px; color: #444; margin-top: 2px; }
-  .cons-meta { padding: 6px 10px; font-size: 10px; color: #333; display: flex; flex-direction: column; justify-content: center; gap: 3px; min-width: 190px; }
-  .ml { font-weight: 700; color: #555; }
+  /* intestazione cliente: sfondo scuro pieno */
+  .cons-header { display: flex; align-items: stretch; background: #2c2c2c; color: #fff; border-bottom: 2px solid #555; }
+  .cons-num { font-size: 22px; font-weight: 700; color: #fff; min-width: 42px; display:flex; align-items:center; justify-content:center; border-right: 2px solid #555; padding: 8px 10px; background: #111; }
+  .cons-cliente { flex: 1; padding: 7px 12px; border-right: 2px solid #555; }
+  .cons-nome { font-size: 13px; font-weight: 700; color: #fff; }
+  .cons-addr { font-size: 10px; color: #ccc; margin-top: 3px; }
+  .cons-meta { padding: 7px 12px; font-size: 10px; color: #ddd; display: flex; flex-direction: column; justify-content: center; gap: 4px; min-width: 200px; }
+  .ml { font-weight: 700; color: #aaa; }
 
+  /* tabella articoli */
   .art-table { width: 100%; border-collapse: collapse; font-size: 10.5px; }
-  .art-table thead tr { background: #e8eaf6; }
-  .art-table th { padding: 4px 8px; text-align: left; font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; color: #333; border-bottom: 1px solid #bbb; }
-  .art-table td { padding: 5px 8px; border-bottom: 1px solid #ececec; vertical-align: top; }
+  .art-table thead tr { background: #3b4fc8; }
+  .art-table th { padding: 5px 8px; text-align: left; font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .6px; color: #fff; border-bottom: 2px solid #2a3ab0; }
+  .art-table td { padding: 5px 8px; border-bottom: 1px solid #ddd; vertical-align: top; }
   .art-table tbody tr:last-child td { border-bottom: none; }
-  .art-table tbody tr:nth-child(even) { background: #f7f7f7; }
+  .art-table tbody tr:nth-child(even) { background: #f0f2ff; }
 
-  .note-box { padding: 4px 10px; border-top: 1px dashed #ccc; font-size: 10px; color: #444; background: #fffde7; }
+  /* note */
+  .note-box { padding: 5px 12px; border-top: 2px solid #e6c200; font-size: 10px; color: #333; background: #fffbe6; }
   .nota { margin: 2px 0; }
-  .nota-label { font-weight: 700; color: #555; }
+  .nota-label { font-weight: 700; color: #7a6000; }
 
-  .cons-check { display: flex; gap: 24px; padding: 6px 10px; border-top: 1px dashed #bbb; font-size: 11px; color: #222; background: #f9f9f9; }
+  /* esito */
+  .cons-check { display: flex; gap: 24px; padding: 7px 12px; border-top: 2px solid #555; font-size: 11px; color: #111; background: #e8e8e8; font-weight: 600; }
   .chk-item { display: inline-flex; align-items: center; gap: 4px; }
-  .motivo-line { display: inline-block; border-bottom: 1px solid #555; min-width: 160px; margin-left: 4px; }
+  .motivo-line { display: inline-block; border-bottom: 1.5px solid #333; min-width: 160px; margin-left: 4px; font-weight: 400; }
 
   @media print {
     body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
