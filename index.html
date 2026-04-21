@@ -983,10 +983,10 @@
               <th>Prenotazione</th>
               <th>Cliente</th>
               <th>Città</th>
-              <th>Giorno programmato</th>
-              <th>Squadra</th>
               <th>Tipo consegna</th>
               <th>Prodotto</th>
+              <th>Squadra</th>
+              <th>Giorno programmato</th>
               <th>Preferenze periodo</th>
             </tr>
           </thead>
@@ -1484,10 +1484,10 @@ function renderLista() {
       <td class="muted" style="font-family:'DM Mono',monospace">${fmtDate(c.dataPrenotazione)}</td>
       <td><strong>${c.cognome || ''} ${c.nome || ''}</strong></td>
       <td class="muted">${c.citta || '—'}</td>
-      <td class="muted" style="font-family:'DM Mono',monospace">${fmtDate(c.giornoConsegna)}</td>
-      <td>${squadraBadgeForConsegna(c.id)}</td>
       <td>${tipiConsegnaBadges(c)}</td>
       <td class="muted">${articoliLabel(c)}</td>
+      <td>${squadraBadgeForConsegna(c.id)}</td>
+      <td class="muted" style="font-family:'DM Mono',monospace">${fmtDate(c.giornoConsegna)}</td>
       <td class="muted">${c.preferenzePeriodo || '—'}</td>
     `;
     tr.addEventListener('click', () => toggleRowDetail(c.id, tr));
