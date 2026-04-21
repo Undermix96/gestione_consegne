@@ -1747,7 +1747,7 @@ function segnaConsegnata(cid, gid) {
   toast('Consegna segnata come completata ✅');
 }
 
-
+function deleteGiornata(gid) {
   const g = db.giornate.find(x => x.id === gid);
   if (!g) return;
   
