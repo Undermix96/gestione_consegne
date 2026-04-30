@@ -1826,7 +1826,7 @@ function renderSelectList() {
   const g = db.giornate.find(x => x.id === selectGiornataId);
   const assigned = new Set(g ? g.consegneIds : []);
   // Filtriamo le consegne che non sono già assegnate a una giornata
-  let candidates = db.consegne.filter(c => (c.stato === 'attesa' || c.stato === 'in_attesa' || c.stato === 'da_confermare') && !assigned.has(c.id));
+  let candidates = db.consegne.filter(c => (c.stato === 'attesa' || c.stato === 'in_attesa' || c.stato === 'da_riprogrammare') && !assigned.has(c.id));
   if (search) candidates = candidates.filter(c => `${c.nome} ${c.cognome}`.toLowerCase().includes(search));
 
   const list = document.getElementById('selectList');
