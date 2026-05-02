@@ -54,38 +54,74 @@ python server.py
 .\avvia.ps1
 ```
 
-### Dipendenze Python
-Il progetto utilizza Python embedded con le seguenti librerie:
-- `pystray` - Per l'icona nella system tray
-- `Pillow` - Per la generazione dell'icona dell'applicazione
-
-L'installazione delle dipendenze è inclusa nel pacchetto.
-
 ## 🛠️ Tecnologie
 
 ### Backend
-- **Python 3** - Server HTTP integrato
-- **JSON** - Persistenza dati locale
-- **PowerShell/Batch** - Script di avvio e configurazione
+- **Python 3** — Server HTTP integrato
+- **JSON** — Persistenza dati locale
+- **PowerShell/Batch** — Script di avvio e configurazione
 
 ### Frontend
-- **HTML5/CSS3** - Interfaccia responsive
-- **JavaScript ES6** - Logica applicativa
-- **Tema chiaro/scuro** - Adattabile alle preferenze
+- **HTML5 / CSS3** — Struttura e stile, senza build step
+- **JavaScript ES Modules (nativi)** — Logica modulare, importata direttamente dal browser
+- **Tema chiaro/scuro** — Adattabile alle preferenze dell'utente
+
+> **Nota tecnica:** il frontend usa `<script type="module">`, supportato da tutti i browser moderni (Chrome, Firefox, Edge, Safari). Non è necessario alcun bundler (Vite, Webpack, ecc.) né Node.js sul server.
 
 ## 📁 Struttura del progetto
 
 ```
 gestione_consegne/
-├── server.py          # Server HTTP e logica backend
-├── index.html         # Interfaccia utente principale
-├── avvia.bat/ps1      # Script di avvio
-├── configura_firewall.bat  # Configurazione rete
-├── dati.json          # Dati principali (generato)
-├── backup/            # Snapshot automatici
-├── python_embed/      # Python embedded (opzionale)
+├── server.py               # Server HTTP e logica backend (invariato)
+├── index.html              # Shell HTML: struttura, modali, nav
+│
+├── css/
+│   ├── theme.css           # Variabili CSS, palette squadre, temi chiaro/scuro
+│   ├── layout.css          # Reset, header, sidebar, struttura app
+│   └── components.css      # Bottoni, pill, badge, tabella, card, modal, form, toast
+│
+├── js/
+│   ├── main.js             # Entry point: init, polling, espone globali per onclick HTML
+│   ├── store.js            # Stato globale condiviso (db, currentView, flags, setter)
+│   ├── api.js              # Layer HTTP: fetchData, postData, ping, remoteLog
+│   ├── sync.js             # loadData, saveData, markDirty, ping, overlay disconnessione
+│   ├── render.js           # renderAll, switchView, renderLista, renderSidebar, renderGiornata
+│   ├── utils.js            # uid, fmtDate, statoPill, tipoBadge, sqBadgeHtml, toast, openModal
+│   ├── theme.js            # initTheme, applyTheme, toggleTheme
+│   ├── dragdrop.js         # Drag & drop ordinamento card giornata
+│   ├── giornate.js         # removeFromGiornata, segnaConsegnata, deleteGiornata, modal nuova giornata
+│   ├── modal-consegna.js   # Modal creazione/modifica consegna, gestione articoli
+│   ├── modal-select.js     # Modal selezione consegne da aggiungere a giornata
+│   ├── squadre.js          # CRUD squadre: add, rename, color, delete
+│   └── stampa.js           # Stampa PDF giornata
+│
+├── avvia.bat / avvia.ps1   # Script di avvio (invariati)
+├── configura_firewall.bat  # Configurazione rete (invariato)
+├── dati.json               # Dati principali (generato dal server)
+├── backup/                 # Snapshot automatici
+├── python_embed/           # Python embedded (opzionale)
 └── README.md
 ```
+
+### Grafo delle dipendenze JS (semplificato)
+
+```
+main.js
+  ├── store.js          (no deps)
+  ├── api.js → store
+  ├── sync.js → api
+  ├── utils.js → store
+  ├── theme.js          (no deps)
+  ├── render.js → sync, utils, store, dragdrop
+  │     └── dragdrop.js → store, sync, api
+  ├── giornate.js → store, sync, api, render, utils
+  ├── modal-consegna.js → store, sync, api, render, utils
+  ├── modal-select.js → store, sync, api, render, utils
+  ├── squadre.js → store, sync, api, render, utils
+  └── stampa.js → store, utils
+```
+
+Nessuna dipendenza circolare. `main.js` importa tutto e registra le funzioni su `window` per gli handler `onclick` inline nell'HTML.
 
 ## ⚙️ Configurazione
 
@@ -97,22 +133,36 @@ Esegui `configura_firewall.bat` una sola volta per abilitare l'accesso da altri 
 
 ## 👥 Gestione Squadre
 
-Il sistema supporta fino a 8 squadre con colori distintivi:
-- Squadra 0: Blu (#4f8aff)
-- Squadra 1: Verde (#22c55e)
-- Squadra 2: Arancione (#f59e0b)
-- Squadra 3: Rosso (#ef4444)
-- Squadra 4: Viola (#a855f7)
-- Squadra 5: Azzurro (#06b6d4)
-- Squadra 6: Arancio scuro (#f97316)
-- Squadra 7: Rosa (#ec4899)
+Il sistema supporta fino a 8 squadre con colori assegnabili:
+
+| Indice | Colore default |
+|--------|----------------|
+| 0 | Blu `#4f8aff` |
+| 1 | Verde `#22c55e` |
+| 2 | Arancione `#f59e0b` |
+| 3 | Rosso `#ef4444` |
+| 4 | Viola `#a855f7` |
+| 5 | Azzurro `#06b6d4` |
+| 6 | Arancio scuro `#f97316` |
+| 7 | Rosa `#ec4899` |
 
 ## 📱 Interfaccia Utente
 
 ### Viste principali
-1. **Lista Consegne** - Visualizzazione tabellare completa
-2. **Giornate** - Pianificazione per date con drag & drop
-3. **Impostazioni** - Gestione squadre e configurazioni
+1. **Lista Consegne** — Visualizzazione tabellare con filtri per stato e città
+2. **Giornate** — Pianificazione per date con drag & drop e sidebar
+3. **Impostazioni** — Gestione squadre con rinomina e selezione colore
+
+### Logica stati consegna
+
+| Stato | Significato | Visibile nel popup "Aggiungi a giornata"? |
+|-------|-------------|-------------------------------------------|
+| `in_attesa` | Non ancora assegnata | ✅ Sì |
+| `da_riprogrammare` | Era assegnata, da rifare | ✅ Sì |
+| `da_confermare` | Assegnata, in attesa conferma cliente | ❌ No (già in giornata) |
+| `programmata` | Confermata | ❌ No |
+| `completata` | Consegnata | ❌ No |
+| `annullata` | Cancellata | ❌ No |
 
 ### Temi
 - **Chiaro/Scuro automatico** basato sul sistema operativo
@@ -128,6 +178,37 @@ Il sistema supporta fino a 8 squadre con colori distintivi:
 - Scrittura atomica per evitare corruzioni
 - Backup automatico a ogni modifica
 - Rotazione log settimanale
+
+## 🔧 Linee guida per il team
+
+### Aggiungere una nuova funzionalità
+1. Se tocca solo la UI di una vista → modifica il file `render.js` o crea un nuovo file in `js/`
+2. Se aggiunge un nuovo tipo di dato → aggiorna `store.js` con il setter
+3. Se aggiunge una chiamata HTTP → aggiungila in `api.js`
+4. Se la funzione deve essere chiamabile da un `onclick` nell'HTML → registrala su `window` in `main.js`
+
+### Aggiungere un nuovo modal
+1. Aggiungi l'HTML del modal in `index.html`
+2. Crea un file `js/modal-nomefeature.js`
+3. Importa e registra le funzioni in `main.js`
+
+### Modificare il CSS
+- Nuove variabili di colore/tema → `css/theme.css`
+- Struttura/layout globale → `css/layout.css`
+- Componenti UI (bottoni, card, form) → `css/components.css`
+
+### Caricare questa codebase in una nuova sessione AI
+Per una **modifica puntuale** a una feature esistente, carica:
+- Il file JS della feature interessata (es. `js/modal-select.js`)
+- `js/store.js` (stato globale)
+- `js/utils.js` (se usi helper)
+
+Per una **modifica strutturale o nuova feature**, carica:
+- `README.md` (architettura)
+- I file JS coinvolti
+- `index.html` (solo se tocchi la struttura HTML)
+
+Non è mai necessario caricare tutto insieme grazie alla separazione modulare.
 
 ## 📞 Supporto
 

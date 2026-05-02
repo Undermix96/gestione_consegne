@@ -1,0 +1,88 @@
+/* ═══════════════════════════════════════════════
+   theme.css — Variabili CSS, palette, temi
+   ═══════════════════════════════════════════════ */
+
+/* ── PALETTE SQUADRE (indipendente dal tema) ── */
+:root {
+  --sq0:  #4f8aff; --sq0-bg:  rgba(79,138,255,.15);
+  --sq1:  #22c55e; --sq1-bg:  rgba(34,197,94,.15);
+  --sq2:  #f59e0b; --sq2-bg:  rgba(245,158,11,.15);
+  --sq3:  #ef4444; --sq3-bg:  rgba(239,68,68,.15);
+  --sq4:  #a855f7; --sq4-bg:  rgba(168,85,247,.15);
+  --sq5:  #06b6d4; --sq5-bg:  rgba(6,182,212,.15);
+  --sq6:  #f97316; --sq6-bg:  rgba(249,115,22,.15);
+  --sq7:  #ec4899; --sq7-bg:  rgba(236,72,153,.15);
+
+  --sidebar-w: 220px;
+  --header-h:  56px;
+  --radius:    10px;
+}
+
+/* ── TEMA SCURO (default) ── */
+:root, [data-theme="dark"] {
+  --bg:        #0f1117;
+  --surface:   #181c27;
+  --surface2:  #1e2333;
+  --border:    #2a2f42;
+  --text:      #e4e8f5;
+  --muted:     #6b7394;
+  --accent:    #4f8aff;
+  --accent2:   #7c5cfc;
+
+  --wait:      #f59e0b;
+  --wait-bg:   rgba(245,158,11,.12);
+  --sched:     #3b82f6;
+  --sched-bg:  rgba(59,130,246,.10);
+  --done:      #22c55e;
+  --done-bg:   rgba(34,197,94,.10);
+  --cancel:    #ef4444;
+  --cancel-bg: rgba(239,68,68,.10);
+
+  --shadow:    0 4px 24px rgba(0,0,0,.4);
+}
+
+/* ── TEMA CHIARO ── */
+[data-theme="light"] {
+  --bg:        #f4f6fb;
+  --surface:   #ffffff;
+  --surface2:  #eef1f8;
+  --border:    #d1d9ee;
+  --text:      #1a1f36;
+  --muted:     #7a86a8;
+  --accent:    #2563eb;
+  --accent2:   #6d28d9;
+
+  --wait:      #d97706;
+  --wait-bg:   rgba(217,119,6,.10);
+  --sched:     #2563eb;
+  --sched-bg:  rgba(37,99,235,.08);
+  --done:      #16a34a;
+  --done-bg:   rgba(22,163,74,.10);
+  --cancel:    #dc2626;
+  --cancel-bg: rgba(220,38,38,.08);
+
+  --shadow:    0 4px 24px rgba(0,0,0,.10);
+}
+
+/* Auto: rispetta preferenza OS se non forzato manualmente */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --bg:        #f4f6fb;
+    --surface:   #ffffff;
+    --surface2:  #eef1f8;
+    --border:    #d1d9ee;
+    --text:      #1a1f36;
+    --muted:     #7a86a8;
+    --accent:    #2563eb;
+    --accent2:   #6d28d9;
+    --wait:      #d97706;
+    --wait-bg:   rgba(217,119,6,.10);
+    --sched:     #2563eb;
+    --sched-bg:  rgba(37,99,235,.08);
+    --done:      #16a34a;
+    --done-bg:   rgba(22,163,74,.10);
+    --cancel:    #dc2626;
+    --cancel-bg: rgba(220,38,38,.08);
+    --shadow:    0 4px 24px rgba(0,0,0,.10);
+  }
+}
