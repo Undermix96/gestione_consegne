@@ -10,15 +10,77 @@
 </head>
 <body>
 
-<!-- ══ HEADER ══════════════════════════════════════════════════════════════ -->
+<!-- ══ OVERLAY LOGIN ════════════════════════════════════════════════════════ -->
+<div class="auth-overlay" id="loginOverlay">
+  <div class="auth-box">
+    <div class="auth-logo">📦</div>
+    <h2 class="auth-title">Gestione Consegne</h2>
+    <form id="loginForm" autocomplete="off">
+      <div class="form-group">
+        <label>Username</label>
+        <input type="text" id="loginUsername" autocomplete="username" placeholder="username"/>
+      </div>
+      <div class="form-group">
+        <label>Password</label>
+        <input type="password" id="loginPassword" autocomplete="current-password" placeholder="password"/>
+      </div>
+      <div class="auth-error" id="loginError"></div>
+      <button type="submit" class="btn btn-primary btn-full" id="loginBtn">Accedi</button>
+    </form>
+  </div>
+</div>
+
+<!-- ══ OVERLAY CAMBIO PASSWORD OBBLIGATORIO ══════════════════════════════════ -->
+<div class="auth-overlay" id="changePasswordOverlay">
+  <div class="auth-box">
+    <div class="auth-logo">🔑</div>
+    <h2 class="auth-title">Cambia password</h2>
+    <p class="auth-subtitle" id="cpSubtitle">Imposta una nuova password prima di continuare.</p>
+    <form id="changePasswordForm" autocomplete="off">
+      <div class="form-group">
+        <label>Password attuale</label>
+        <input type="password" id="cpVecchia" placeholder="password attuale"/>
+      </div>
+      <div class="form-group">
+        <label>Nuova password <span class="muted" style="font-weight:400;font-size:11px;">(min. 8 caratteri)</span></label>
+        <input type="password" id="cpNuova" placeholder="nuova password"/>
+      </div>
+      <div class="form-group">
+        <label>Conferma nuova password</label>
+        <input type="password" id="cpConferma" placeholder="ripeti la nuova password"/>
+      </div>
+      <div class="auth-error" id="cpError"></div>
+      <button type="submit" class="btn btn-primary btn-full" id="cpBtn">Cambia password</button>
+    </form>
+  </div>
+</div>
+
+<!-- ══ HEADER ════════════════════════════════════════════════════════════════ -->
 <header>
   <div class="logo">📦 Gestione Consegne</div>
   <nav class="nav-tabs">
-    <button class="nav-tab active"  onclick="switchView('lista')">📋 Lista Consegne</button>
-    <button class="nav-tab"         onclick="switchView('giornate')">📅 Giornate</button>
-    <button class="nav-tab"         onclick="switchView('impostazioni')">⚙️ Impostazioni</button>
+    <button class="nav-tab active"  data-view="lista"         onclick="switchView('lista')">📋 Lista Consegne</button>
+    <button class="nav-tab"         data-view="giornate"      onclick="switchView('giornate')">📅 Giornate</button>
+    <button class="nav-tab"         data-view="impostazioni"  onclick="switchView('impostazioni')">⚙️ Impostazioni</button>
   </nav>
   <div class="spacer"></div>
+  <!-- Gestione utenti (solo admin) -->
+  <button class="btn btn-ghost header-btn" id="btnGestioneUtenti"
+          onclick="openModal('modalUtenti'); renderPannelloUtenti()"
+          style="display:none" title="Gestione utenti">👥 Utenti</button>
+  <!-- Menu utente -->
+  <div class="user-menu" id="userMenu">
+    <button class="user-menu-btn" onclick="toggleUserMenu()">
+      <span class="user-icon">👤</span>
+      <span id="headerUsername"></span>
+      <span class="user-caret">▾</span>
+    </button>
+    <div class="user-dropdown" id="userDropdown">
+      <button onclick="apriCambioPasswordProprio(); closeUserMenu()">🔑 Cambia password</button>
+      <div class="dropdown-sep"></div>
+      <button onclick="logout()">🚪 Esci</button>
+    </div>
+  </div>
   <button class="theme-btn" id="themeBtn" onclick="toggleTheme()" title="Cambia tema"></button>
   <div class="clients-badge" id="clientsBadge" title="Utenti connessi in questo momento">
     <span class="cb-dot"></span>
@@ -30,7 +92,7 @@
   </div>
 </header>
 
-<!-- ══ OVERLAY DISCONNESSIONE ═══════════════════════════════════════════════ -->
+<!-- ══ OVERLAY DISCONNESSIONE ════════════════════════════════════════════════ -->
 <div id="disconnectOverlay">
   <div class="dc-icon">🔌</div>
   <h2>Connessione al server persa</h2>
@@ -40,7 +102,12 @@
   <p>I dati salvati in precedenza sono al sicuro.<br>Attendi che il server venga riavviato oppure contatta il responsabile.</p>
 </div>
 
-<!-- ══ APP BODY ═════════════════════════════════════════════════════════════ -->
+<!-- ══ PANNELLO SUPERADMIN (visibile solo al superadmin) ════════════════════ -->
+<div id="superadminPanel" style="display:none; flex:1; overflow-y:auto; padding:32px;">
+  <div id="pannelloUtenti"></div>
+</div>
+
+<!-- ══ APP BODY ══════════════════════════════════════════════════════════════ -->
 <div class="app-body">
 
   <!-- SIDEBAR (solo nella vista giornate) -->
@@ -139,10 +206,10 @@
   </div><!-- /main -->
 </div><!-- /app-body -->
 
-<!-- ══ TOAST ════════════════════════════════════════════════════════════════ -->
+<!-- ══ TOAST ═════════════════════════════════════════════════════════════════ -->
 <div id="toast"></div>
 
-<!-- ══ MODAL: CONSEGNA ══════════════════════════════════════════════════════ -->
+<!-- ══ MODAL: CONSEGNA ═══════════════════════════════════════════════════════ -->
 <div class="modal-overlay" id="modalConsegna">
   <div class="modal">
     <div class="modal-header">
@@ -256,7 +323,7 @@
   </div>
 </div>
 
-<!-- ══ MODAL: NUOVA GIORNATA ════════════════════════════════════════════════ -->
+<!-- ══ MODAL: NUOVA GIORNATA ═════════════════════════════════════════════════ -->
 <div class="modal-overlay" id="modalGiornata">
   <div class="modal" style="width:360px">
     <div class="modal-header">
@@ -282,7 +349,7 @@
   </div>
 </div>
 
-<!-- ══ MODAL: SELEZIONA CONSEGNE ════════════════════════════════════════════ -->
+<!-- ══ MODAL: SELEZIONA CONSEGNE ═════════════════════════════════════════════ -->
 <div class="modal-overlay" id="modalSelect">
   <div class="modal" style="width:500px">
     <div class="modal-header">
@@ -302,11 +369,92 @@
   </div>
 </div>
 
-<!-- ══ SCRIPT ════════════════════════════════════════════════════════════════
-     type="module" attiva gli ES modules nativi del browser.
-     Nessun bundler, nessuna build step: funziona direttamente con Python.
-══════════════════════════════════════════════════════════════════════════════ -->
+<!-- ══ MODAL: GESTIONE UTENTI (admin) ════════════════════════════════════════ -->
+<div class="modal-overlay" id="modalUtenti">
+  <div class="modal modal-wide">
+    <div class="modal-header">
+      <h3>Gestione utenti</h3>
+      <button class="modal-close" onclick="closeModal('modalUtenti')">✕</button>
+    </div>
+    <div class="modal-body" style="padding:0;">
+      <div id="pannelloUtenti" style="padding:0;"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ══ MODAL: NUOVO UTENTE ════════════════════════════════════════════════════ -->
+<div class="modal-overlay" id="modalNuovoUtente">
+  <div class="modal" style="width:380px">
+    <div class="modal-header">
+      <h3>Nuovo utente</h3>
+      <button class="modal-close" onclick="closeModal('modalNuovoUtente')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label>Ruolo</label>
+        <select id="nuovoUtenteRuolo">
+          <option value="standard">Standard</option>
+          <option value="admin">Admin</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Username</label>
+        <input type="text" id="nuovoUtenteUsername" placeholder="es. mario.rossi" autocomplete="off"/>
+      </div>
+      <div class="form-group">
+        <label>Password <span class="muted" style="font-weight:400;font-size:11px;">(min. 8 caratteri)</span></label>
+        <input type="password" id="nuovoUtentePassword" placeholder="password iniziale" autocomplete="new-password"/>
+      </div>
+      <div class="auth-error" id="nuovoUtenteError"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost"   onclick="closeModal('modalNuovoUtente')">Annulla</button>
+      <button class="btn btn-primary" onclick="salvaNuovoUtente()">Crea utente</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══ MODAL: CAMBIO PASSWORD UTENTE (privilegiato) ══════════════════════════ -->
+<div class="modal-overlay" id="modalCambioPasswordUtente">
+  <div class="modal" style="width:380px">
+    <div class="modal-header">
+      <h3 id="cpuTitle">Cambia password utente</h3>
+      <button class="modal-close" onclick="closeModal('modalCambioPasswordUtente')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label>Nuova password <span class="muted" style="font-weight:400;font-size:11px;">(min. 8 caratteri)</span></label>
+        <input type="password" id="cpuNuova" placeholder="nuova password" autocomplete="new-password"/>
+      </div>
+      <div class="form-group">
+        <label>Conferma nuova password</label>
+        <input type="password" id="cpuConferma" placeholder="ripeti la nuova password"/>
+      </div>
+      <div class="auth-error" id="cpuError"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost"   onclick="closeModal('modalCambioPasswordUtente')">Annulla</button>
+      <button class="btn btn-primary" onclick="salvaCambioPasswordUtente()">Salva password</button>
+    </div>
+  </div>
+</div>
+
 <script type="module" src="js/main.js"></script>
+
+<script>
+// User menu toggle (non-module, per onclick inline)
+function toggleUserMenu() {
+  document.getElementById('userDropdown').classList.toggle('open');
+}
+function closeUserMenu() {
+  document.getElementById('userDropdown').classList.remove('open');
+}
+document.addEventListener('click', e => {
+  const menu = document.getElementById('userMenu');
+  if (menu && !menu.contains(e.target))
+    document.getElementById('userDropdown').classList.remove('open');
+});
+</script>
 
 </body>
 </html>

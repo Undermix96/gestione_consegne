@@ -1,6 +1,6 @@
 # Gestione Consegne
 
-Sistema completo per la gestione di consegne e installazioni, progettato per team di lavoro in ambiente locale. Permette di pianificare le attività, assegnarle a squadre e monitorare lo stato delle consegne.
+Sistema completo per la gestione di consegne e installazioni, progettato per team di lavoro in ambiente locale (LAN). Permette di pianificare le attività, assegnarle a squadre e monitorare lo stato delle consegne, con un sistema di autenticazione multi-ruolo.
 
 ## 📋 Funzionalità principali
 
@@ -22,11 +22,39 @@ Sistema completo per la gestione di consegne e installazioni, progettato per tea
 - **Contatore utenti connessi** in tempo reale
 - **Gestione disconnessioni** con schermata di blocco
 
-### Sicurezza e Affidabilità
-- **Server unico** in rete tramite lock file
-- **Backup automatico** (20 snapshot giornalieri)
-- **Logging avanzato** con rotazione a 7 giorni
-- **Firewall automatico** per accesso da altri PC
+### Autenticazione e Gestione Utenti
+- **Tre livelli di ruolo**: Superadmin, Admin, Standard
+- **Login sicuro** con Challenge-Response (SHA-256 puro, compatibile HTTP)
+- **Sessioni con scadenza** per inattività (2 ore)
+- **Log degli accessi** con IP e timestamp
+
+## 👥 Ruoli e permessi
+
+| Azione | Standard | Admin | Superadmin |
+|---|---|---|---|
+| Operatività consegne/giornate | ✅ | ✅ | ❌ |
+| Creare/gestire squadre | ❌ | ✅ | ❌ |
+| Creare utenti standard | ❌ | ✅ | ✅ |
+| Eliminare utenti standard | ❌ | ✅ | ✅ |
+| Creare utenti admin | ❌ | ✅ | ✅ |
+| Eliminare/declassare admin | ❌ | ❌ | ✅ |
+| Toccare il superadmin | ❌ | ❌ | ❌ |
+
+**Il superadmin** è un account puramente amministrativo: non ha accesso ai dati operativi (consegne, giornate). Vede solo il pannello di gestione utenti.
+
+## 🔐 Sicurezza in rete locale (HTTP)
+
+Il sistema usa **Challenge-Response con SHA-256** per proteggere le credenziali su reti HTTP non cifrate:
+
+1. Il client richiede un **challenge** monouso al server (TTL 60s)
+2. Calcola `response = SHA-256(SHA-256(password) + challenge)` in JS puro (no `crypto.subtle`, compatibile con IP LAN)
+3. Il server verifica senza mai ricevere la password in chiaro
+4. **Replay attack impossibile**: il challenge è monouso e scade in 60 secondi
+5. Le password sono memorizzate con **hashlib.scrypt** (KDF lento, built-in Python)
+
+### Primo accesso
+- Username: `superadmin` — Password: `admin`
+- Il cambio password è **obbligatorio** al primo login
 
 ## 🚀 Installazione
 
@@ -44,99 +72,118 @@ Sistema completo per la gestione di consegne e installazioni, progettato per tea
 ### Per gli utenti
 - Esegui `avvia.bat` per aprire l'applicazione nel browser
 - Il server si avvia automaticamente se non è già attivo
+- Effettua il login con le credenziali ricevute dall'amministratore
 
 ### Per lo sviluppo
 ```bash
-# Avvio server Python
 python server.py
-
-# Oppure con PowerShell
-.\avvia.ps1
 ```
 
 ## 🛠️ Tecnologie
 
 ### Backend
-- **Python 3** — Server HTTP integrato
-- **JSON** — Persistenza dati locale
-- **PowerShell/Batch** — Script di avvio e configurazione
+- **Python 3** — Server HTTP integrato (`http.server` stdlib)
+- **hashlib.scrypt** — KDF per le password (built-in Python 3.6+)
+- **hashlib.sha256** — Verifica challenge-response (built-in)
+- **secrets** — Generazione token e challenge crittograficamente sicuri
+- **JSON** — Persistenza dati (`dati.json`) e utenti (`utenti.json`)
 
 ### Frontend
 - **HTML5 / CSS3** — Struttura e stile, senza build step
 - **JavaScript ES Modules (nativi)** — Logica modulare, importata direttamente dal browser
+- **SHA-256 in JS puro** (`js/sha256.js`) — Per il challenge-response senza dipendenze
+- **sessionStorage** — Token di sessione (auto-cancellato alla chiusura del browser)
 - **Tema chiaro/scuro** — Adattabile alle preferenze dell'utente
 
-> **Nota tecnica:** il frontend usa `<script type="module">`, supportato da tutti i browser moderni (Chrome, Firefox, Edge, Safari). Non è necessario alcun bundler (Vite, Webpack, ecc.) né Node.js sul server.
+> **Nota tecnica:** il frontend usa `<script type="module">`, supportato da tutti i browser moderni. Non è necessario alcun bundler né Node.js.
 
 ## 📁 Struttura del progetto
 
 ```
 gestione_consegne/
-├── server.py               # Server HTTP e logica backend (invariato)
-├── index.html              # Shell HTML: struttura, modali, nav
+├── server.py               # Server HTTP, auth, sessioni, utenti, log
+├── index.html              # Shell HTML: struttura, overlay login, modali
 │
 ├── css/
-│   ├── theme.css           # Variabili CSS, palette squadre, temi chiaro/scuro
+│   ├── theme.css           # Variabili CSS, palette, temi chiaro/scuro
 │   ├── layout.css          # Reset, header, sidebar, struttura app
-│   └── components.css      # Bottoni, pill, badge, tabella, card, modal, form, toast
+│   └── components.css      # Bottoni, badge, form, modal, overlay login/auth
 │
 ├── js/
-│   ├── main.js             # Entry point: init, polling, espone globali per onclick HTML
-│   ├── store.js            # Stato globale condiviso (db, currentView, flags, setter)
-│   ├── api.js              # Layer HTTP: fetchData, postData, ping, remoteLog
-│   ├── sync.js             # loadData, saveData, markDirty, ping, overlay disconnessione
-│   ├── render.js           # renderAll, switchView, renderLista, renderSidebar, renderGiornata
-│   ├── utils.js            # uid, fmtDate, statoPill, tipoBadge, sqBadgeHtml, toast, openModal
+│   ├── main.js             # Entry point: check auth, init app, espone globali
+│   ├── store.js            # Stato globale (db, currentUser, flags, setter)
+│   ├── api.js              # Layer HTTP con auth header + intercept 401
+│   ├── auth.js             # Login, logout, cambio password, token, overlay
+│   ├── sha256.js           # SHA-256 puro (per challenge-response su HTTP)
+│   ├── sync.js             # loadData, saveData, markDirty, ping, disconnect
+│   ├── render.js           # renderAll, switchView, renderLista, renderGiornata
+│   ├── utils.js            # uid, fmtDate, statoPill, toast, openModal
 │   ├── theme.js            # initTheme, applyTheme, toggleTheme
 │   ├── dragdrop.js         # Drag & drop ordinamento card giornata
-│   ├── giornate.js         # removeFromGiornata, segnaConsegnata, deleteGiornata, modal nuova giornata
-│   ├── modal-consegna.js   # Modal creazione/modifica consegna, gestione articoli
-│   ├── modal-select.js     # Modal selezione consegne da aggiungere a giornata
-│   ├── squadre.js          # CRUD squadre: add, rename, color, delete
+│   ├── giornate.js         # CRUD giornate e assegnazione consegne
+│   ├── modal-consegna.js   # Modal creazione/modifica consegna
+│   ├── modal-select.js     # Modal selezione consegne → giornata
+│   ├── modal-utenti.js     # Pannello gestione utenti (admin/superadmin)
+│   ├── squadre.js          # CRUD squadre
 │   └── stampa.js           # Stampa PDF giornata
 │
-├── avvia.bat / avvia.ps1   # Script di avvio (invariati)
-├── configura_firewall.bat  # Configurazione rete (invariato)
-├── dati.json               # Dati principali (generato dal server)
-├── backup/                 # Snapshot automatici
-├── python_embed/           # Python embedded (opzionale)
-└── README.md
+├── dati.json               # Dati operativi (generato dal server)
+├── utenti.json             # Utenti e hash password (generato al primo avvio)
+├── backup/                 # Snapshot automatici (max 20)
+├── gestionale.log          # Log con rotazione 7 giorni
+├── avvia.bat / avvia.ps1   # Script di avvio
+├── configura_firewall.bat  # Configurazione rete
+└── python_embed/           # Python embedded (opzionale)
 ```
 
-### Grafo delle dipendenze JS (semplificato)
+### Grafo delle dipendenze JS
 
 ```
 main.js
   ├── store.js          (no deps)
-  ├── api.js → store
-  ├── sync.js → api
+  ├── sha256.js         (no deps)
+  ├── auth.js → sha256, store
+  ├── api.js → store, auth
+  ├── sync.js → api, store
   ├── utils.js → store
   ├── theme.js          (no deps)
   ├── render.js → sync, utils, store, dragdrop
-  │     └── dragdrop.js → store, sync, api
-  ├── giornate.js → store, sync, api, render, utils
-  ├── modal-consegna.js → store, sync, api, render, utils
-  ├── modal-select.js → store, sync, api, render, utils
-  ├── squadre.js → store, sync, api, render, utils
+  │     └── dragdrop.js → store, sync
+  ├── giornate.js → store, sync, render, utils
+  ├── modal-consegna.js → store, sync, render, utils
+  ├── modal-select.js → store, sync, render, utils
+  ├── modal-utenti.js → store, auth, utils, sha256
+  ├── squadre.js → store, sync, render, utils
   └── stampa.js → store, utils
 ```
-
-Nessuna dipendenza circolare. `main.js` importa tutto e registra le funzioni su `window` per gli handler `onclick` inline nell'HTML.
 
 ## ⚙️ Configurazione
 
 ### Porta di rete
-Il server utilizza la porta **8742** per le comunicazioni HTTP.
+Il server usa la porta **8742**.
 
 ### Firewall
 Esegui `configura_firewall.bat` una sola volta per abilitare l'accesso da altri PC.
 
+## 📊 Log e Audit
+
+Il file `gestionale.log` registra tutte le operazioni con utente e IP:
+
+```
+2026-06-16 10:00:00 [INFO]  [AUTH]   superadmin ha effettuato il login da 192.168.1.15
+2026-06-16 10:05:00 [INFO]  [UTENTI] admin mario.rossi creato da superadmin
+2026-06-16 10:11:00 [INFO]  [DATI]   mario.rossi — aggiunta nuova consegna: Rossi Mario
+2026-06-16 10:30:00 [WARN]  [AUTH]   login fallito per utente 'pippo' da 192.168.1.33
+```
+
+Categorie: `[AUTH]`, `[UTENTI]`, `[DATI]`. Rotazione automatica ogni 7 giorni.
+
 ## 👥 Gestione Squadre
 
-Il sistema supporta fino a 8 squadre con colori assegnabili:
+Il sistema supporta fino a 8 squadre con colori assegnabili (solo Admin e Superadmin):
 
-| Indice | Colore default |
-|--------|----------------|
+| Indice | Colore |
+|--------|--------|
 | 0 | Blu `#4f8aff` |
 | 1 | Verde `#22c55e` |
 | 2 | Arancione `#f59e0b` |
@@ -146,76 +193,29 @@ Il sistema supporta fino a 8 squadre con colori assegnabili:
 | 6 | Arancio scuro `#f97316` |
 | 7 | Rosa `#ec4899` |
 
-## 📱 Interfaccia Utente
+## 🔧 Linee guida per il team di sviluppo
 
-### Viste principali
-1. **Lista Consegne** — Visualizzazione tabellare con filtri per stato e città
-2. **Giornate** — Pianificazione per date con drag & drop e sidebar
-3. **Impostazioni** — Gestione squadre con rinomina e selezione colore
-
-### Logica stati consegna
-
-| Stato | Significato | Visibile nel popup "Aggiungi a giornata"? |
-|-------|-------------|-------------------------------------------|
-| `in_attesa` | Non ancora assegnata | ✅ Sì |
-| `da_riprogrammare` | Era assegnata, da rifare | ✅ Sì |
-| `da_confermare` | Assegnata, in attesa conferma cliente | ❌ No (già in giornata) |
-| `programmata` | Confermata | ❌ No |
-| `completata` | Consegnata | ❌ No |
-| `annullata` | Cancellata | ❌ No |
-
-### Temi
-- **Chiaro/Scuro automatico** basato sul sistema operativo
-- **Cambio manuale** con bottone nell'header
-
-## 🛡️ Sicurezza
-
-### Server Lock
-- Solo un'istanza server attiva nella rete
-- Controllo tramite file `server.lock`
-
-### Dati
-- Scrittura atomica per evitare corruzioni
-- Backup automatico a ogni modifica
-- Rotazione log settimanale
-
-## 🔧 Linee guida per il team
-
-### Aggiungere una nuova funzionalità
-1. Se tocca solo la UI di una vista → modifica il file `render.js` o crea un nuovo file in `js/`
-2. Se aggiunge un nuovo tipo di dato → aggiorna `store.js` con il setter
-3. Se aggiunge una chiamata HTTP → aggiungila in `api.js`
-4. Se la funzione deve essere chiamabile da un `onclick` nell'HTML → registrala su `window` in `main.js`
+### Aggiungere una nuova feature
+1. Logica UI → nuovo file `js/modal-*.js` o aggiorna `render.js`
+2. Nuovo dato → aggiorna setter in `store.js`
+3. Nuova chiamata HTTP → aggiungila in `api.js`
+4. Funzione callable da `onclick` HTML → registrala su `window` in `main.js`
+5. Nuovo endpoint → aggiungilo in `server.py` con verifica token e ruolo
 
 ### Aggiungere un nuovo modal
-1. Aggiungi l'HTML del modal in `index.html`
-2. Crea un file `js/modal-nomefeature.js`
-3. Importa e registra le funzioni in `main.js`
+1. HTML in `index.html`
+2. Logica in `js/modal-nomefeature.js`
+3. Import + registrazione su `window` in `main.js`
 
 ### Modificare il CSS
-- Nuove variabili di colore/tema → `css/theme.css`
-- Struttura/layout globale → `css/layout.css`
-- Componenti UI (bottoni, card, form) → `css/components.css`
+- Nuove variabili → `css/theme.css`
+- Layout → `css/layout.css`
+- Componenti → `css/components.css`
 
 ### Caricare questa codebase in una nuova sessione AI
-Per una **modifica puntuale** a una feature esistente, carica:
-- Il file JS della feature interessata (es. `js/modal-select.js`)
-- `js/store.js` (stato globale)
-- `js/utils.js` (se usi helper)
-
-Per una **modifica strutturale o nuova feature**, carica:
-- `README.md` (architettura)
-- I file JS coinvolti
-- `index.html` (solo se tocchi la struttura HTML)
-
-Non è mai necessario caricare tutto insieme grazie alla separazione modulare.
-
-## 📞 Supporto
-
-In caso di problemi:
-1. Verifica che Python sia installato
-2. Controlla le impostazioni firewall
-3. Riavvia l'applicazione con `avvia.bat`
+Per una **modifica puntuale**: carica il file JS interessato + `store.js` + `utils.js`.
+Per una **modifica strutturale**: carica `README.md` + i file JS coinvolti + `index.html` se tocchi l'HTML.
+Per modifiche all'**autenticazione**: carica `server.py` + `js/auth.js` + `js/sha256.js`.
 
 ## 📄 Licenza
 

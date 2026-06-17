@@ -8,13 +8,16 @@
 export const API = `http://${window.location.hostname}:8742/api`;
 
 export let db = { consegne: [], giornate: [], squadre: [] };
-export let currentView      = 'lista';
+export let currentView       = 'lista';
 export let currentGiornataId = null;
 export let editingConsegnaId = null;
 export let expandedRowId     = null;
 export let isDirty           = false;
 export let serverOnline      = true;
 export let pingFailCount     = 0;
+
+// Utente corrente (popolato dopo il login)
+export let currentUser = { id: null, username: null, ruolo: null };
 
 export const PING_FAIL_THRESHOLD = 2;
 export const SQ_COLORS = 8;
@@ -29,3 +32,4 @@ export function setExpandedRowId(val)      { expandedRowId = val; }
 export function setIsDirty(val)            { isDirty = val; }
 export function setServerOnline(val)       { serverOnline = val; }
 export function setPingFailCount(val)      { pingFailCount = val; }
+export function setCurrentUser(val)        { currentUser = val; }

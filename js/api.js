@@ -2,38 +2,53 @@
  * api.js — Comunicazione con il server Python
  *
  * Tutte le chiamate HTTP sono centralizzate qui.
- * I moduli consumano queste funzioni, mai fetch() direttamente.
+ * Aggiunge automaticamente X-Session-Token ad ogni richiesta autenticata.
+ * Intercetta i 401 e reindirizza al login.
  */
 
 import { API } from './store.js';
+import { getAuthHeaders, handleUnauthorized } from './auth.js';
+
+async function _fetch(url, options = {}) {
+  const r = await fetch(url, {
+    ...options,
+    headers: { ...getAuthHeaders(), ...(options.headers || {}) },
+  });
+  if (r.status === 401) {
+    handleUnauthorized();
+    throw new Error('Non autenticato');
+  }
+  return r;
+}
 
 export async function fetchData() {
-  const r = await fetch(`${API}/data`, { cache: 'no-store' });
+  const r = await _fetch(`${API}/data`, { cache: 'no-store' });
   if (!r.ok) throw new Error('Risposta non OK dal server');
   return r.json();
 }
 
 export async function postData(payload) {
-  const r = await fetch(`${API}/data`, {
-    method: 'POST',
+  const r = await _fetch(`${API}/data`, {
+    method:  'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
+    body:    JSON.stringify(payload),
   });
   if (!r.ok) throw new Error('Salvataggio fallito');
 }
 
 export async function pingServer() {
-  const r = await fetch(`${API}/ping`, { cache: 'no-store' });
+  const r = await _fetch(`${API}/ping`, { cache: 'no-store' });
   if (!r.ok) throw new Error('Ping fallito');
   return r.json();
 }
 
 export async function remoteLog(msg) {
   try {
-    await fetch(`${API}/log`, {
-      method: 'POST',
+    const username = sessionStorage.getItem('gc_username') ?? 'unknown';
+    await _fetch(`${API}/log`, {
+      method:  'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ msg }),
+      body:    JSON.stringify({ msg: `${username} — ${msg}` }),
     });
   } catch { /* non critico */ }
 }

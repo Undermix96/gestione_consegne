@@ -379,3 +379,195 @@ tbody tr[data-stato="da_riprogrammare"] td:first-child { border-left: 3px solid 
   border-radius: 12px; padding: 20px 32px; text-align: center;
 }
 #disconnectOverlay .dc-step { font-size: 14px; font-weight: 600; color: var(--text); margin-top: 8px; }
+
+
+/* ══ AUTH OVERLAY ══════════════════════════════════════════════════════════ */
+
+.auth-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 99998;
+  background: var(--bg);
+  display: none;
+  align-items: center;
+  justify-content: center;
+}
+.auth-overlay.show {
+  display: flex;
+}
+
+.auth-box {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 40px 36px;
+  width: 100%;
+  max-width: 380px;
+  box-shadow: 0 8px 40px rgba(0,0,0,0.4);
+}
+
+.auth-logo {
+  font-size: 40px;
+  text-align: center;
+  margin-bottom: 8px;
+}
+
+.auth-title {
+  font-size: 20px;
+  font-weight: 700;
+  text-align: center;
+  color: var(--text);
+  margin: 0 0 24px;
+}
+
+.auth-subtitle {
+  font-size: 13px;
+  color: var(--muted);
+  text-align: center;
+  margin: -16px 0 20px;
+}
+
+.auth-error {
+  font-size: 12px;
+  color: var(--cancel);
+  min-height: 18px;
+  margin-bottom: 10px;
+  text-align: center;
+}
+
+.btn-full {
+  width: 100%;
+  justify-content: center;
+}
+
+/* ══ USER MENU ══════════════════════════════════════════════════════════════ */
+
+.user-menu {
+  position: relative;
+}
+
+.user-menu-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 13px;
+  cursor: pointer;
+  font-family: 'DM Sans', sans-serif;
+  transition: background 0.15s;
+}
+.user-menu-btn:hover {
+  background: var(--surface2);
+}
+
+.user-icon { font-size: 15px; }
+.user-caret { font-size: 10px; color: var(--muted); }
+
+.user-dropdown {
+  display: none;
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  min-width: 180px;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+  z-index: 200;
+  overflow: hidden;
+}
+.user-dropdown.open { display: block; }
+
+.user-dropdown button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  padding: 10px 16px;
+  font-size: 13px;
+  cursor: pointer;
+  font-family: 'DM Sans', sans-serif;
+  transition: background 0.12s;
+}
+.user-dropdown button:hover { background: var(--surface2); }
+
+.dropdown-sep {
+  height: 1px;
+  background: var(--border);
+  margin: 2px 0;
+}
+
+.header-btn {
+  padding: 6px 12px;
+  font-size: 13px;
+}
+
+/* ══ GESTIONE UTENTI ════════════════════════════════════════════════════════ */
+
+.modal-wide {
+  width: 760px;
+  max-width: 96vw;
+}
+
+.utenti-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 24px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.utenti-toolbar h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.table-wrap table th,
+.table-wrap table td {
+  padding: 10px 14px;
+  font-size: 13px;
+}
+
+.ruolo-badge {
+  display: inline-block;
+  padding: 3px 9px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+.badge-standard   { background: rgba(107,115,148,0.18); color: var(--muted); }
+.badge-admin      { background: rgba(79,138,255,0.18);  color: var(--accent); }
+.badge-superadmin { background: rgba(124,92,252,0.18);  color: var(--accent2); }
+
+.self-badge {
+  display: inline-block;
+  font-size: 10px;
+  color: var(--muted);
+  background: var(--surface2);
+  border-radius: 4px;
+  padding: 1px 5px;
+  margin-left: 4px;
+  vertical-align: middle;
+}
+
+.btn-sm {
+  padding: 4px 10px;
+  font-size: 12px;
+  border-radius: 6px;
+}
+
+/* ══ SUPERADMIN PANEL ═══════════════════════════════════════════════════════ */
+
+#superadminPanel {
+  padding: 40px;
+  max-width: 900px;
+  margin: 0 auto;
+}
