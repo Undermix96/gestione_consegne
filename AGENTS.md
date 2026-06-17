@@ -328,3 +328,107 @@ export let currentUser = { id: null, username: null, ruolo: null };
 - **`expandedRowId`** viene resettato a `null` se la riga viene eliminata
 - L'ordine **Cognome Nome** è intenzionale e definitivo
 - Il campo `password_hash` in `utenti.json` contiene `sha256(password)` — se si cambia schema di hashing bisogna resettare tutte le password
+
+---
+
+## 14. Istruzioni operative per l'agente AI
+
+Questa sezione definisce il comportamento atteso dell'agente in ogni sessione di lavoro su questo progetto. Seguire queste istruzioni in ordine di priorità, senza eccezioni.
+
+### 14.1 Pianifica prima di agire — autorizzazione obbligatoria
+
+**Non modificare mai file senza autorizzazione esplicita dell'utente.**
+
+Prima di qualsiasi modifica:
+1. Analizza la richiesta e identifica tutti i file coinvolti
+2. Esponi il piano in modo chiaro: cosa cambia, dove, perché
+3. Se la modifica tocca più file, elenca ognuno con una riga di descrizione
+4. Attendi conferma esplicita ("ok", "vai", "procedi" o simile) prima di scrivere qualsiasi file
+5. Se la conferma non arriva o è ambigua, chiedi di nuovo — non interpretare il silenzio come consenso
+
+Questo vale anche per modifiche apparentemente banali o "ovvie". L'utente ha sempre l'ultima parola.
+
+### 14.2 Preferisci modifiche chirurgiche al refactoring
+
+**Modifica il meno possibile per ottenere il risultato richiesto.**
+
+- Usa `str_replace` per cambiare porzioni specifiche di file invece di riscrivere l'intero file
+- Se una funzione va corretta, correggi quella funzione — non riscrivere il modulo
+- Riscrivi un file intero solo se: (a) la struttura è irrecuperabile, oppure (b) la modifica richiesta tocca più del 60% del contenuto
+- Quando riscrivi un file intero, segnalalo esplicitamente all'utente e spiega perché era necessario
+
+Riscrivere grandi porzioni di codice funzionante introduce regressioni invisibili. Il codice che non viene toccato non si rompe.
+
+### 14.3 Revisione obbligatoria dopo ogni modifica
+
+**Dopo aver applicato ogni modifica, rileggila prima di consegnarla.**
+
+Processo di revisione:
+1. Rileggi ogni blocco modificato nel contesto del file completo
+2. Cerca attivamente almeno un errore — di sintassi, logica, o coerenza con il resto del codice
+3. Verifica che i nomi di funzioni, variabili e endpoint siano coerenti tra tutti i file toccati
+4. Controlla che le importazioni siano corrette e complete
+5. Se trovi un errore, correggilo prima di consegnare — mai lasciare errori noti all'utente
+
+Se dopo la revisione non trovi errori, dillo esplicitamente: "ho riletto e non ho trovato problemi". Non omettere questo passaggio.
+
+### 14.4 Non inventare — chiedi o cerca
+
+**In caso di dubbio su qualsiasi fatto tecnico, comportamento di una libreria, o dettaglio implementativo:**
+
+- **Non inventare** una risposta plausibile e presentarla come certa
+- **Chiedi all'utente** se il dubbio riguarda una scelta progettuale o un requisito ("preferisci X o Y?")
+- **Cerca online** se il dubbio riguarda un fatto tecnico verificabile (API, comportamento di Python/browser, standard di protocollo)
+- Quando citi una fonte o un comportamento tecnico, distingui chiaramente tra "so con certezza" e "ho trovato online" e "suppongo"
+
+Questo progetto gira su hardware reale in produzione. Un'assunzione sbagliata può rompere qualcosa per utenti reali.
+
+### 14.5 Gestione dei dubbi progettuali
+
+Prima di procedere, chiedi chiarimenti se:
+- La richiesta è ambigua su *dove* o *come* implementare qualcosa
+- La modifica richiesta potrebbe confliggere con una decisione già presa (vedi sezione 12)
+- La feature richiesta ha più di un'implementazione ragionevole con trade-off diversi
+- Non è chiaro se la modifica deve toccare solo il frontend, solo il backend, o entrambi
+
+Formula le domande in modo specifico e binario quando possibile ("vuoi X o Y?") invece di domande aperte che costringono l'utente a ri-progettare da zero.
+
+### 14.6 File critici — attenzione massima
+
+Questi file richiedono cautela extra perché un errore può rendere il sistema inutilizzabile:
+
+| File | Rischio |
+|---|---|
+| `server.py` | Un errore di sintassi blocca il server per tutti gli utenti |
+| `utenti.json` (struttura) | Un'incompatibilità invalida tutti gli account |
+| `js/auth.js` + `js/sha256.js` | Un errore blocca il login per tutti |
+| `dati.json` (struttura) | Un'incompatibilità corrode i dati operativi |
+| `avvia.bat` / `avvia.ps1` | Un errore impedisce l'avvio del server |
+
+Per questi file: pianifica con più dettaglio, preferisci modifiche minime, e rileggi due volte dopo la modifica.
+
+### 14.7 Aggiorna la documentazione insieme al codice
+
+Ogni volta che una modifica cambia:
+- Un endpoint API → aggiorna la tabella endpoint in questa sezione 5
+- Una struttura dati → aggiorna le sezioni 6 o 10
+- Una funzione chiave → aggiorna il grafo delle dipendenze (sezione 4) se necessario
+- Una decisione progettuale → aggiorna la sezione 12
+- Qualcosa che "non fare" → aggiorna la sezione 13
+
+README.md e AGENTS.md devono sempre rispecchiare lo stato reale del codice. Documentazione obsoleta è peggio di nessuna documentazione.
+
+### 14.8 Commit message
+
+Alla fine di ogni sessione di modifiche, genera un commit message seguendo questo formato:
+
+```
+tipo(ambito): descrizione breve in italiano (max 72 caratteri)
+
+- dettaglio 1
+- dettaglio 2
+- dettaglio N (solo se rilevante)
+```
+
+Tipi ammessi: `feat`, `fix`, `refactor`, `docs`, `style`, `chore`.
+Esempio di ambito: `auth`, `server`, `ui`, `dati`, `utenti`.
