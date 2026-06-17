@@ -117,7 +117,7 @@ function _avviaSuperadmin() {
 
   // Mostra il pannello utenti dedicato
   document.getElementById('superadminPanel').style.display = '';
-  renderPannelloUtenti();
+  renderPannelloUtenti('pannelloUtentiSuperadmin');
 }
 
 function _applicaPermessiUI(ruolo) {

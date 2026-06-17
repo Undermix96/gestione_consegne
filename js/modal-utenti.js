@@ -27,8 +27,11 @@ async function fetchUtenti() {
 
 // ── Render pannello utenti ────────────────────────
 
-export async function renderPannelloUtenti() {
-  const container = document.getElementById('pannelloUtenti');
+let _lastContainerId = 'pannelloUtenti';
+
+export async function renderPannelloUtenti(containerId = _lastContainerId) {
+  _lastContainerId = containerId;
+  const container = document.getElementById(containerId);
   if (!container) return;
 
   container.innerHTML = '<div style="padding:24px;color:var(--muted)">Caricamento…</div>';
