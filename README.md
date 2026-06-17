@@ -50,7 +50,7 @@ Il sistema usa **Challenge-Response con SHA-256** per proteggere le credenziali 
 2. Calcola `response = SHA-256(SHA-256(password) + challenge)` in JS puro (no `crypto.subtle`, compatibile con IP LAN)
 3. Il server verifica senza mai ricevere la password in chiaro
 4. **Replay attack impossibile**: il challenge è monouso e scade in 60 secondi
-5. Le password sono memorizzate con **hashlib.scrypt** (KDF lento, built-in Python)
+5. Le password sono memorizzate come `sha256(password)` — non invertibile, non è la password in chiaro
 
 ### Primo accesso
 - Username: `superadmin` — Password: `admin`
@@ -83,8 +83,7 @@ python server.py
 
 ### Backend
 - **Python 3** — Server HTTP integrato (`http.server` stdlib)
-- **hashlib.scrypt** — KDF per le password (built-in Python 3.6+)
-- **hashlib.sha256** — Verifica challenge-response (built-in)
+- **hashlib.sha256** — Hash password (h1) e verifica challenge-response (built-in)
 - **secrets** — Generazione token e challenge crittograficamente sicuri
 - **JSON** — Persistenza dati (`dati.json`) e utenti (`utenti.json`)
 

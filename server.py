@@ -95,40 +95,20 @@ def rotate_log():
 def sha256_hex(s: str) -> str:
     return hashlib.sha256(s.encode("utf-8")).hexdigest()
 
-def bcrypt_hash(h1: str) -> str:
+def store_password(h1: str) -> str:
     """
-    Usa hashlib.scrypt (built-in Python 3.6+) come KDF lento al posto di bcrypt.
-    Non richiede dipendenze esterne.
-    Il salt è derivato deterministicamente per semplicità di verifica;
-    in produzione sarebbe random e salvato separatamente, ma qui usiamo
-    un approccio compatibile con il modello challenge-response.
-
-    Schema: scrypt(h1, salt=FIXED_SALT, n=2^14, r=8, p=1) -> hex
-    Il FIXED_SALT è generato una volta per installazione e salvato in utenti.json.
+    Memorizza h1 = sha256(password) come password_hash.
+    Schema challenge-response:
+      Client: response = sha256(h1 + challenge)
+      Server: sha256(stored_h1 + challenge) == response
+    h1 non e' la password in chiaro, e' il suo SHA-256 (non invertibile).
     """
-    import hashlib
-    salt = _get_kdf_salt()
-    dk = hashlib.scrypt(h1.encode(), salt=salt, n=16384, r=8, p=1, dklen=32)
-    return dk.hex()
+    return h1
 
-def bcrypt_verify(h1: str, stored_hash: str) -> bool:
-    return bcrypt_hash(h1) == stored_hash
+def verify_password(h1: str, stored_hash: str) -> bool:
+    return secrets.compare_digest(h1, stored_hash)
 
-_kdf_salt_cache = None
-
-def _get_kdf_salt() -> bytes:
-    global _kdf_salt_cache
-    if _kdf_salt_cache:
-        return _kdf_salt_cache
-    users_data = _read_users_raw()
-    salt_hex = users_data.get("kdf_salt")
-    if not salt_hex:
-        # Prima volta: genera e salva
-        salt_hex = secrets.token_hex(32)
-        users_data["kdf_salt"] = salt_hex
-        _write_users_raw(users_data)
-    _kdf_salt_cache = bytes.fromhex(salt_hex)
-    return _kdf_salt_cache
+# _get_kdf_salt rimosso: non più necessario con schema store_password/h1 diretto
 
 # ─── UTENTI I/O ──────────────────────────────────────────────────────────────
 
@@ -166,13 +146,8 @@ def init_users():
             return
 
     log("Inizializzazione utenti.json con superadmin di default.")
-    # Genera il salt KDF prima di hashare
-    salt_hex = secrets.token_hex(32)
-    data = {"kdf_salt": salt_hex, "utenti": []}
-    _write_users_raw(data)
-
-    # Ora hasha con il salt appena creato
-    pwd_hash = bcrypt_hash(DEFAULT_SUPERADMIN_H1)
+    data = {"utenti": []}
+    pwd_hash = store_password(DEFAULT_SUPERADMIN_H1)
     superadmin = {
         "id":              "u_superadmin",
         "username":        "superadmin",
@@ -515,26 +490,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self._json_response(401, {"error": "Credenziali non valide"})
                 return
 
-            # Verifica: expected = sha256(stored_h1_hex + challenge)
-            # dove stored_h1 viene verificato confrontando bcrypt
-            # Approccio: dobbiamo ricostruire h1 dal response e dal challenge.
-            # Il client manda response = sha256(h1 + challenge).
-            # Il server non può invertire sha256, quindi verifica direttamente:
-            # ricalcola sha256(password_hash_verificabile + challenge) — ma non abbiamo h1.
-            #
-            # Schema corretto implementato:
-            # Il server salva bcrypt(h1). Per verificare il challenge-response,
-            # il server deve confrontare sha256(h1 + ch) con il response ricevuto.
-            # Questo richiede di conoscere h1, che non è memorizzato (solo il suo hash lento).
-            #
-            # Soluzione: usiamo uno schema a due step memorizzando anche h1_hash = sha256(h1)
-            # e verifichiamo response == sha256(password_hash_field + ch) dove
-            # password_hash_field è lo scrypt(h1).
-            #
-            # In pratica: response_atteso = sha256(stored_scrypt_hash + ch)
-            # Questo è sicuro perché stored_scrypt_hash non è la password e non è invertibile.
-            stored_hash   = user.get("password_hash", "")
-            expected      = sha256_hex(stored_hash + ch)
+            # Verifica challenge-response:
+            # stored_h1 = sha256(password) memorizzato al momento della creazione utente
+            # Il client ha mandato response = sha256(stored_h1 + challenge)
+            # Il server ricalcola lo stesso e confronta
+            stored_h1     = user.get("password_hash", "")
+            expected      = sha256_hex(stored_h1 + ch)
 
             if not secrets.compare_digest(response, expected):
                 log(f"[AUTH] Login fallito — password errata per '{username}' da {client_ip}", "warning")
@@ -598,15 +559,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return
 
             # Verifica vecchia password tramite challenge-response
-            stored_hash  = user.get("password_hash", "")
-            expected     = sha256_hex(stored_hash + ch)
+            stored_h1    = user.get("password_hash", "")
+            expected     = sha256_hex(stored_h1 + ch)
             if not secrets.compare_digest(response, expected):
                 log(f"[AUTH] Cambio password fallito (password errata) per '{session['username']}' da {client_ip}", "warning")
                 self._json_response(401, {"error": "Password attuale non corretta"})
                 return
 
             # Salva nuova password
-            nuova_hash = bcrypt_hash(nuova_h1)
+            nuova_hash = store_password(nuova_h1)
             with users_lock:
                 data = _read_users_raw()
                 for u in data["utenti"]:
@@ -716,7 +677,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return
 
             new_id   = "u_" + secrets.token_hex(8)
-            pwd_hash = bcrypt_hash(password_h1)
+            pwd_hash = store_password(password_h1)
             nuovo    = {
                 "id":             new_id,
                 "username":       username,
@@ -766,7 +727,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self._json_response(400, {"error": "nuova_hash mancante"})
                 return
 
-            nuova_hash = bcrypt_hash(nuova_h1)
+            nuova_hash = store_password(nuova_h1)
             with users_lock:
                 data = _read_users_raw()
                 for u in data["utenti"]:

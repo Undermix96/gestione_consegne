@@ -45,19 +45,19 @@ Lo schema protegge le password su HTTP puro, dove `crypto.subtle` non è disponi
 1. GET  /api/auth/challenge  →  { challenge: "a3f9..." }  (hex 32 byte, monouso, TTL 60s)
 2. Client: h1 = sha256(password), response = sha256(h1 + challenge)
 3. POST /api/auth/login  →  { username, challenge, response }
-4. Server: expected = sha256(stored_scrypt_hash + challenge)
+4. Server: expected = sha256(stored_h1 + challenge)  ← stored_h1 = sha256(password)
            confronta con secrets.compare_digest
 ```
 
 - La password in chiaro non lascia mai il browser
 - Il challenge è monouso: rimosso immediatamente dopo il consumo
 - Replay attack impossibile: il challenge scade in 60 secondi
-- Sul server le password sono memorizzate come `hashlib.scrypt(h1)` — KDF lento built-in
+- Sul server le password sono memorizzate come `h1 = sha256(password)` — non invertibile, non è la password in chiaro
 
 **File chiave:**
 - `js/sha256.js` — implementazione SHA-256 pura (~80 righe), no dipendenze, stabile
 - `js/auth.js` — login, logout, cambio password, token, overlay
-- `server.py` — funzioni `sha256_hex`, `bcrypt_hash`, `bcrypt_verify`, `new_challenge`, `consume_challenge`
+- `server.py` — funzioni `sha256_hex`, `store_password`, `verify_password`, `new_challenge`, `consume_challenge`
 
 ### Sessioni in memoria
 
@@ -182,12 +182,11 @@ Il superadmin riceve 403 su `GET/POST /api/data`.
 
 ```json
 {
-  "kdf_salt": "hex64chars",
   "utenti": [
     {
       "id": "u_abc123",
       "username": "mario.rossi",
-      "password_hash": "hex64chars (scrypt output)",
+      "password_hash": "hex64chars (sha256 di sha256(password))",
       "ruolo": "standard | admin | superadmin",
       "primo_login": false,
       "creato_da": "u_xyz",
@@ -198,7 +197,7 @@ Il superadmin riceve 403 su `GET/POST /api/data`.
 }
 ```
 
-`kdf_salt` è generato una volta alla creazione del file e non cambia mai. È usato da `hashlib.scrypt` come salt per tutte le password. Scrittura atomica (`.tmp` → rename), stesso pattern di `dati.json`.
+Struttura semplice, nessun salt separato. `password_hash` contiene `sha256(password)` (h1). Scrittura atomica (`.tmp` → rename), stesso pattern di `dati.json`.
 
 ---
 
@@ -305,7 +304,7 @@ export let currentUser = { id: null, username: null, ruolo: null };
 | Decisione | Motivazione |
 |-----------|-------------|
 | Challenge-Response SHA-256 invece di HTTPS | `crypto.subtle` non disponibile su IP LAN via HTTP; nessuna libreria installabile |
-| `hashlib.scrypt` invece di bcrypt | Built-in Python 3.6+ — zero dipendenze esterne |
+| `sha256(password)` come password_hash | Schema coerente con challenge-response: il server può verificare `sha256(h1 + challenge)` senza KDF separato; h1 non è invertibile |
 | Salt KDF globale in `utenti.json` | Semplifica il modello challenge-response; il salt è comunque segreto e non in chiaro sulla rete |
 | `sessionStorage` invece di `localStorage` | Auto-cancellato alla chiusura del browser → sessioni più sicure |
 | Superadmin senza operatività | Separazione netta dei ruoli; l'admin di sistema non deve toccare i dati aziendali |
@@ -328,4 +327,4 @@ export let currentUser = { id: null, username: null, ruolo: null };
 - **Non ripristinare `f_tipoProdotto` / `f_codiceProdotto` / `f_tipoConsegna` nel DOM** — non esistono più
 - **`expandedRowId`** viene resettato a `null` se la riga viene eliminata
 - L'ordine **Cognome Nome** è intenzionale e definitivo
-- Il **kdf_salt** in `utenti.json` non va mai rigenerato dopo il primo avvio — invaliderebbe tutte le password esistenti
+- Il campo `password_hash` in `utenti.json` contiene `sha256(password)` — se si cambia schema di hashing bisogna resettare tutte le password
