@@ -1,29 +1,28 @@
 /**
- * sync.js — Caricamento/salvataggio dati, ping, gestione disconnessione
+ * sync.js — Ping, polling basato su timestamp, gestione disconnessione
  */
 
-import { fetchData, postData, pingServer as apiPing, remoteLog } from './api.js';
+import { pingServer, fetchStato, fetchConsegne, fetchGiornate, fetchSquadre } from './api.js';
 import {
-  db, setDb, isDirty, setIsDirty,
+  db, setDb,
   serverOnline, setServerOnline,
   pingFailCount, setPingFailCount,
+  localTimestamps, setLocalTimestamps,
   PING_FAIL_THRESHOLD,
 } from './store.js';
-
-let saveTimer = null;
 
 // ── Sync UI ──────────────────────────────────────
 
 export function setSaving() {
-  document.getElementById('syncDot').className = 'sync-dot saving';
+  document.getElementById('syncDot').className   = 'sync-dot saving';
   document.getElementById('syncLabel').textContent = 'salvataggio…';
 }
 export function syncOk() {
-  document.getElementById('syncDot').className = 'sync-dot';
+  document.getElementById('syncDot').className   = 'sync-dot';
   document.getElementById('syncLabel').textContent = 'connesso';
 }
 export function syncError() {
-  document.getElementById('syncDot').className = 'sync-dot error';
+  document.getElementById('syncDot').className   = 'sync-dot error';
   document.getElementById('syncLabel').textContent = 'errore server';
 }
 
@@ -37,17 +36,24 @@ export function hideDisconnectOverlay() {
   document.getElementById('disconnectOverlay').classList.remove('show');
 }
 
-// ── Data load / save ─────────────────────────────
+// ── Caricamento dati iniziale ────────────────────
 
 export async function loadData() {
   try {
-    const data = await fetchData();
-    setDb(data);
-    if (!db.consegne) db.consegne = [];
-    if (!db.giornate) db.giornate = [];
-    if (!db.squadre)  db.squadre  = [];
-    if (db._connectedClients !== undefined) {
-      document.getElementById('clientsCount').textContent = db._connectedClients;
+    const [rc, rg, rs] = await Promise.all([
+      fetchConsegne(),
+      fetchGiornate(),
+      fetchSquadre(),
+    ]);
+    setDb({
+      consegne: rc.consegne || [],
+      giornate: rg.giornate || [],
+      squadre:  rs.squadre  || [],
+    });
+    // Aggiorna clientsCount se presente
+    if (rc._connectedClients !== undefined) {
+      const el = document.getElementById('clientsCount');
+      if (el) el.textContent = rc._connectedClients;
     }
     syncOk();
     return true;
@@ -57,36 +63,74 @@ export async function loadData() {
   }
 }
 
-export async function saveData() {
-  if (!serverOnline) return;
-  setSaving();
-  try {
-    await postData(db);
-    setIsDirty(false);
-    syncOk();
-  } catch {
-    syncError();
+// ── Applica risposta server allo store ───────────
+
+/**
+ * Ogni endpoint di scrittura risponde con il db aggiornato del negozio.
+ * Questa funzione aggiorna lo store locale e fa un render selettivo.
+ */
+export function applyServerResponse(data) {
+  if (!data) return;
+  const newDb = { ...db };
+  if (data.consegne !== undefined) newDb.consegne = data.consegne;
+  if (data.giornate !== undefined) newDb.giornate  = data.giornate;
+  if (data.squadre  !== undefined) newDb.squadre   = data.squadre;
+  setDb(newDb);
+  if (data._connectedClients !== undefined) {
+    const el = document.getElementById('clientsCount');
+    if (el) el.textContent = data._connectedClients;
   }
 }
 
-export function markDirty() {
-  setIsDirty(true);
-  clearTimeout(saveTimer);
-  saveTimer = setTimeout(saveData, 600);
+// ── Polling basato su timestamp ──────────────────
+
+export async function pollData() {
+  if (!serverOnline) return;
+  try {
+    const stato = await fetchStato();
+    let changed = false;
+
+    if (stato.consegne > (localTimestamps.consegne || 0)) {
+      const r = await fetchConsegne();
+      setDb({ ...db, consegne: r.consegne || [] });
+      setLocalTimestamps({ ...localTimestamps, consegne: stato.consegne });
+      changed = true;
+    }
+    if (stato.giornate > (localTimestamps.giornate || 0)) {
+      const r = await fetchGiornate();
+      setDb({ ...db, giornate: r.giornate || [] });
+      setLocalTimestamps({ ...localTimestamps, giornate: stato.giornate });
+      changed = true;
+    }
+    if (stato.squadre > (localTimestamps.squadre || 0)) {
+      const r = await fetchSquadre();
+      setDb({ ...db, squadre: r.squadre || [] });
+      setLocalTimestamps({ ...localTimestamps, squadre: stato.squadre });
+      changed = true;
+    }
+
+    if (changed) {
+      // Notifica main.js di fare un render
+      window._onPollUpdate?.();
+    }
+  } catch {
+    // Errore silenzioso nel polling — il ping gestisce il disconnect
+  }
 }
 
 // ── Ping ─────────────────────────────────────────
 
 export async function ping() {
   try {
-    const data = await apiPing();
+    const data = await pingServer();
     setPingFailCount(0);
     if (!serverOnline) {
       setServerOnline(true);
       hideDisconnectOverlay();
     }
     if (data.clients !== undefined) {
-      document.getElementById('clientsCount').textContent = data.clients;
+      const el = document.getElementById('clientsCount');
+      if (el) el.textContent = data.clients;
     }
     syncOk();
   } catch {

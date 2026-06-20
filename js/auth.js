@@ -1,52 +1,50 @@
 /**
- * auth.js — Gestione autenticazione lato client
+ * auth.js — Autenticazione lato client
  *
- * Responsabilità:
- * - Flusso login con Challenge-Response (SHA-256 puro, no crypto.subtle)
- * - Gestione token in sessionStorage
- * - Header X-Session-Token per tutte le richieste API
- * - Intercettazione 401 → overlay login
- * - Cambio password (proprio account o forzato al primo login)
+ * Challenge-Response SHA-256, token in sessionStorage,
+ * header X-Session-Token, overlay login/cambio password.
  */
 
-import { sha256 }  from './sha256.js';
-import { API }     from './store.js';
+import { sha256 } from './sha256.js';
+import { API }    from './store.js';
 
-// ── Chiavi sessionStorage ────────────────────────
-const KEY_TOKEN    = 'gc_token';
-const KEY_RUOLO    = 'gc_ruolo';
-const KEY_USERNAME = 'gc_username';
-const KEY_USER_ID  = 'gc_user_id';
+const KEY_TOKEN        = 'gc_token';
+const KEY_USERNAME     = 'gc_username';
+const KEY_USER_ID      = 'gc_user_id';
+const KEY_NEGOZIO_ID   = 'gc_negozio_id';
+const KEY_PERMESSI     = 'gc_permessi';
+const KEY_SUPERADMIN   = 'gc_superadmin';
 
-// ── Getters sessionStorage ───────────────────────
+// ── Getters ──────────────────────────────────────
 
-export function getToken()    { return sessionStorage.getItem(KEY_TOKEN); }
-export function getRuolo()    { return sessionStorage.getItem(KEY_RUOLO); }
-export function getUsername() { return sessionStorage.getItem(KEY_USERNAME); }
-export function getUserId()   { return sessionStorage.getItem(KEY_USER_ID); }
-
-export function isLoggedIn()  { return !!getToken(); }
+export function getToken()       { return sessionStorage.getItem(KEY_TOKEN); }
+export function getUsername()    { return sessionStorage.getItem(KEY_USERNAME); }
+export function getUserId()      { return sessionStorage.getItem(KEY_USER_ID); }
+export function getNegozioId()   { return sessionStorage.getItem(KEY_NEGOZIO_ID); }
+export function getPermessi()    { return JSON.parse(sessionStorage.getItem(KEY_PERMESSI) || '[]'); }
+export function isSuperadmin()   { return sessionStorage.getItem(KEY_SUPERADMIN) === 'true'; }
+export function isLoggedIn()     { return !!getToken(); }
 
 export function getAuthHeaders() {
   const token = getToken();
   return token ? { 'X-Session-Token': token } : {};
 }
 
-function saveSession({ token, ruolo, username, user_id }) {
-  sessionStorage.setItem(KEY_TOKEN,    token);
-  sessionStorage.setItem(KEY_RUOLO,    ruolo);
-  sessionStorage.setItem(KEY_USERNAME, username);
-  sessionStorage.setItem(KEY_USER_ID,  user_id);
+function saveSession(data) {
+  sessionStorage.setItem(KEY_TOKEN,      data.token);
+  sessionStorage.setItem(KEY_USERNAME,   data.username);
+  sessionStorage.setItem(KEY_USER_ID,    data.user_id);
+  sessionStorage.setItem(KEY_NEGOZIO_ID, data.negozio_id ?? '');
+  sessionStorage.setItem(KEY_PERMESSI,   JSON.stringify(data.permessi ?? []));
+  sessionStorage.setItem(KEY_SUPERADMIN, String(!!data.is_superadmin));
 }
 
 function clearSession() {
-  sessionStorage.removeItem(KEY_TOKEN);
-  sessionStorage.removeItem(KEY_RUOLO);
-  sessionStorage.removeItem(KEY_USERNAME);
-  sessionStorage.removeItem(KEY_USER_ID);
+  [KEY_TOKEN, KEY_USERNAME, KEY_USER_ID, KEY_NEGOZIO_ID, KEY_PERMESSI, KEY_SUPERADMIN]
+    .forEach(k => sessionStorage.removeItem(k));
 }
 
-// ── Challenge-Response helpers ───────────────────
+// ── Challenge-Response ───────────────────────────
 
 async function getChallenge() {
   const r = await fetch(`${API}/auth/challenge`, { cache: 'no-store' });
@@ -55,11 +53,6 @@ async function getChallenge() {
   return challenge;
 }
 
-/**
- * Costruisce la response per il challenge:
- *   h1       = sha256(password)
- *   response = sha256(h1 + challenge)
- */
 function buildResponse(password, challenge) {
   const h1 = sha256(password);
   return { h1, response: sha256(h1 + challenge) };
@@ -67,10 +60,6 @@ function buildResponse(password, challenge) {
 
 // ── Login ────────────────────────────────────────
 
-/**
- * Esegue il login completo.
- * @returns {{ ok: boolean, must_change_password: boolean, error?: string }}
- */
 export async function login(username, password) {
   try {
     const challenge = await getChallenge();
@@ -83,21 +72,12 @@ export async function login(username, password) {
     });
 
     const data = await r.json();
+    if (!r.ok) return { ok: false, error: data.error || 'Credenziali non valide' };
 
-    if (!r.ok) {
-      return { ok: false, error: data.error || 'Credenziali non valide' };
-    }
-
-    saveSession({
-      token:    data.token,
-      ruolo:    data.ruolo,
-      username: data.username,
-      user_id:  data.user_id,
-    });
-
+    saveSession(data);
     return { ok: true, must_change_password: !!data.must_change_password };
 
-  } catch (e) {
+  } catch {
     return { ok: false, error: 'Server non raggiungibile' };
   }
 }
@@ -114,15 +94,11 @@ export async function logout() {
   clearSession();
 }
 
-// ── Cambio password ──────────────────────────────
+// ── Cambio password proprio account ──────────────
 
-/**
- * Cambia la propria password.
- * @returns {{ ok: boolean, error?: string }}
- */
 export async function changePassword(passwordVecchia, passwordNuova) {
   try {
-    const challenge = await getChallenge();
+    const challenge    = await getChallenge();
     const { response } = buildResponse(passwordVecchia, challenge);
     const nuova_hash   = sha256(passwordNuova);
 
@@ -134,31 +110,7 @@ export async function changePassword(passwordVecchia, passwordNuova) {
 
     const data = await r.json();
     if (!r.ok) return { ok: false, error: data.error || 'Errore cambio password' };
-
-    // Invalida sessione locale → forza nuovo login
     clearSession();
-    return { ok: true };
-
-  } catch {
-    return { ok: false, error: 'Server non raggiungibile' };
-  }
-}
-
-/**
- * Imposta la password di un altro utente (admin su standard, superadmin su admin).
- * Non richiede la vecchia password — azione privilegiata.
- * @returns {{ ok: boolean, error?: string }}
- */
-export async function setPasswordUtente(userId, passwordNuova) {
-  try {
-    const nuova_hash = sha256(passwordNuova);
-    const r = await fetch(`${API}/utenti/${userId}/password`, {
-      method:  'PUT',
-      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-      body:    JSON.stringify({ nuova_hash }),
-    });
-    const data = await r.json();
-    if (!r.ok) return { ok: false, error: data.error || 'Errore cambio password' };
     return { ok: true };
   } catch {
     return { ok: false, error: 'Server non raggiungibile' };
@@ -167,10 +119,6 @@ export async function setPasswordUtente(userId, passwordNuova) {
 
 // ── Intercettazione 401 ──────────────────────────
 
-/**
- * Da chiamare quando una risposta API restituisce 401.
- * Pulisce la sessione e mostra l'overlay di login.
- */
 export function handleUnauthorized() {
   clearSession();
   showLoginOverlay();
@@ -190,15 +138,15 @@ export function hideLoginOverlay() {
   document.getElementById('loginOverlay').classList.remove('show');
 }
 
-// ── Overlay cambio password obbligatorio ─────────
+// ── Overlay cambio password ───────────────────────
 
 export function showChangePasswordOverlay(msg = '') {
   const overlay = document.getElementById('changePasswordOverlay');
   overlay.classList.add('show');
-  document.getElementById('cpError').textContent  = msg;
-  document.getElementById('cpVecchia').value      = '';
-  document.getElementById('cpNuova').value        = '';
-  document.getElementById('cpConferma').value     = '';
+  document.getElementById('cpError').textContent = msg;
+  document.getElementById('cpVecchia').value     = '';
+  document.getElementById('cpNuova').value       = '';
+  document.getElementById('cpConferma').value    = '';
   document.getElementById('cpVecchia').focus();
 }
 
@@ -208,10 +156,6 @@ export function hideChangePasswordOverlay() {
 
 // ── Init auth UI ─────────────────────────────────
 
-/**
- * Collega i form di login e cambio password ai loro handler.
- * Da chiamare una sola volta in DOMContentLoaded.
- */
 export function initAuthUI() {
   // Form login
   document.getElementById('loginForm').addEventListener('submit', async e => {
@@ -221,33 +165,24 @@ export function initAuthUI() {
     const errEl    = document.getElementById('loginError');
     const btnEl    = document.getElementById('loginBtn');
 
-    if (!username || !password) {
-      errEl.textContent = 'Inserisci username e password';
-      return;
-    }
+    if (!username || !password) { errEl.textContent = 'Inserisci username e password'; return; }
 
-    btnEl.disabled     = true;
-    btnEl.textContent  = 'Accesso in corso…';
-    errEl.textContent  = '';
+    btnEl.disabled    = true;
+    btnEl.textContent = 'Accesso in corso…';
+    errEl.textContent = '';
 
     const result = await login(username, password);
 
     btnEl.disabled    = false;
     btnEl.textContent = 'Accedi';
 
-    if (!result.ok) {
-      errEl.textContent = result.error;
-      return;
-    }
+    if (!result.ok) { errEl.textContent = result.error; return; }
 
     hideLoginOverlay();
-
     if (result.must_change_password) {
       showChangePasswordOverlay('Devi cambiare la password prima di continuare.');
       return;
     }
-
-    // Avvia l'app
     window._initApp();
   });
 
@@ -260,18 +195,9 @@ export function initAuthUI() {
     const errEl    = document.getElementById('cpError');
     const btnEl    = document.getElementById('cpBtn');
 
-    if (!vecchia || !nuova || !conferma) {
-      errEl.textContent = 'Compila tutti i campi';
-      return;
-    }
-    if (nuova !== conferma) {
-      errEl.textContent = 'Le due password non coincidono';
-      return;
-    }
-    if (nuova.length < 8) {
-      errEl.textContent = 'La password deve essere di almeno 8 caratteri';
-      return;
-    }
+    if (!vecchia || !nuova || !conferma) { errEl.textContent = 'Compila tutti i campi'; return; }
+    if (nuova !== conferma)              { errEl.textContent = 'Le due password non coincidono'; return; }
+    if (nuova.length < 8)               { errEl.textContent = 'La password deve essere di almeno 8 caratteri'; return; }
 
     btnEl.disabled    = true;
     btnEl.textContent = 'Salvataggio…';
@@ -282,15 +208,12 @@ export function initAuthUI() {
     btnEl.disabled    = false;
     btnEl.textContent = 'Cambia password';
 
-    if (!result.ok) {
-      errEl.textContent = result.error;
-      return;
-    }
+    if (!result.ok) { errEl.textContent = result.error; return; }
 
-    // Sessione invalidata → torna al login
     hideChangePasswordOverlay();
     showLoginOverlay();
-    document.getElementById('loginError').textContent = '✅ Password cambiata. Accedi con la nuova password.';
-    document.getElementById('loginError').style.color = 'var(--done)';
+    const loginErr = document.getElementById('loginError');
+    loginErr.textContent = '✅ Password cambiata. Accedi con la nuova password.';
+    loginErr.style.color = 'var(--done)';
   });
 }

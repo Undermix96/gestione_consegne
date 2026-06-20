@@ -1,104 +1,80 @@
 /**
- * modal-utenti.js — Gestione utenti (pannello admin/superadmin)
+ * modal-utenti.js — Gestione utenti per account con permessi utenti.*
  *
- * Admin:       vede e gestisce utenti standard + crea admin
- * Superadmin:  vede e gestisce tutti (standard + admin), declassa admin
- *
- * Il superadmin non ha accesso ai dati operativi: questo pannello
- * è la sua unica vista dopo il login.
+ * Mostra la lista utenti del proprio negozio.
+ * Permette: creare utenti, cambiare password, cambiare tipo account, eliminare.
  */
 
-import { API }                              from './store.js';
-import { getAuthHeaders, getRuolo,
-         getUsername, setPasswordUtente }   from './auth.js';
-import { toast }                            from './utils.js';
-import { sha256 }                           from './sha256.js';
+import { fetchUtenti, createUtente, setPasswordUtente, setTipoAccount, deleteUtente as apiDeleteUtente, fetchTipiAccount } from './api.js';
+import { getUsername, getUserId } from './auth.js';
+import { toast } from './utils.js';
+import { sha256 } from './sha256.js';
+import { hasPermesso } from './permessi.js';
 
-// ── Fetch utenti ─────────────────────────────────
+let _containerId = 'pannelloUtenti';
+let _tipi        = [];
 
-async function fetchUtenti() {
-  const r = await fetch(`${API}/utenti`, {
-    headers: { ...getAuthHeaders() },
-    cache: 'no-store',
-  });
-  if (!r.ok) throw new Error('Impossibile caricare la lista utenti');
-  return r.json(); // { utenti: [...] }
-}
+// ── Render pannello ───────────────────────────────
 
-// ── Render pannello utenti ────────────────────────
-
-let _lastContainerId = 'pannelloUtenti';
-
-export async function renderPannelloUtenti(containerId = _lastContainerId) {
-  _lastContainerId = containerId;
+export async function renderPannelloAdmin(containerId = _containerId) {
+  _containerId = containerId;
   const container = document.getElementById(containerId);
   if (!container) return;
 
   container.innerHTML = '<div style="padding:24px;color:var(--muted)">Caricamento…</div>';
 
-  let data;
   try {
-    data = await fetchUtenti();
+    const [dataUtenti, dataTipi] = await Promise.all([
+      fetchUtenti(),
+      hasPermesso('tipi_account.leggi') ? fetchTipiAccount() : Promise.resolve({ tipi_account: [] }),
+    ]);
+    _tipi = dataTipi.tipi_account || [];
+    _renderUtentiTable(container, dataUtenti.utenti || []);
   } catch (e) {
     container.innerHTML = `<div style="padding:24px;color:var(--cancel)">${e.message}</div>`;
-    return;
   }
+}
 
-  const myRuolo    = getRuolo();
+function _renderUtentiTable(container, utenti) {
   const myUsername = getUsername();
-  const utenti     = data.utenti || [];
+  const myId       = getUserId();
 
-  // Superadmin vede tutti; admin vede solo standard e admin (non superadmin)
-  const visibili = myRuolo === 'superadmin'
-    ? utenti.filter(u => u.ruolo !== 'superadmin')
-    : utenti.filter(u => u.ruolo === 'standard' || u.ruolo === 'admin');
+  const canCrea    = hasPermesso('utenti.crea');
+  const canModifica = hasPermesso('utenti.modifica');
+  const canElimina = hasPermesso('utenti.elimina');
 
-  const ruoloLabel = { standard: 'Standard', admin: 'Admin', superadmin: 'Super Admin' };
-  const ruoloBadge = {
-    standard:   'badge-standard',
-    admin:      'badge-admin',
-    superadmin: 'badge-superadmin',
-  };
-
-  const righe = visibili.map(u => {
-    const isSelf    = u.username === myUsername;
-    const isAdmin   = u.ruolo === 'admin';
-    const canDelete = !isSelf && (myRuolo === 'superadmin' || u.ruolo === 'standard');
-    const canPwd    = !isSelf && (myRuolo === 'superadmin' || u.ruolo === 'standard');
-    const canDeclass = myRuolo === 'superadmin' && isAdmin;
+  const righe = utenti.map(u => {
+    const isSelf  = u.id === myId;
+    const tipo    = _tipi.find(t => t.id === u.tipo_account_id);
+    const nomeT   = tipo ? tipo.nome : (u.tipo_account_id ? '(sconosciuto)' : '—');
 
     return `
     <tr>
       <td><strong>${u.username}</strong>${isSelf ? ' <span class="self-badge">tu</span>' : ''}</td>
-      <td><span class="ruolo-badge ${ruoloBadge[u.ruolo]}">${ruoloLabel[u.ruolo]}</span></td>
-      <td class="muted" style="font-family:'DM Mono',monospace;font-size:12px;">${u.ultimo_accesso ? fmtDatetime(u.ultimo_accesso) : '—'}</td>
-      <td class="muted" style="font-family:'DM Mono',monospace;font-size:12px;">${u.creato_il ? fmtDatetime(u.creato_il) : '—'}</td>
+      <td><span class="ruolo-badge badge-tipo">${nomeT}</span></td>
+      <td class="muted" style="font-family:'DM Mono',monospace;font-size:12px;">${u.ultimo_accesso ? _fmtDatetime(u.ultimo_accesso) : '—'}</td>
+      <td class="muted" style="font-family:'DM Mono',monospace;font-size:12px;">${u.creato_il ? _fmtDatetime(u.creato_il) : '—'}</td>
       <td>
         <div style="display:flex;gap:6px;justify-content:flex-end;">
-          ${canPwd    ? `<button class="btn btn-ghost btn-sm" onclick="openCambioPasswordUtente('${u.id}','${u.username}')">🔑 Password</button>` : ''}
-          ${canDeclass ? `<button class="btn btn-ghost btn-sm" onclick="declassaAdmin('${u.id}','${u.username}')">⬇ Declassa</button>` : ''}
-          ${canDelete  ? `<button class="btn btn-danger btn-sm" onclick="eliminaUtente('${u.id}','${u.username}')">🗑 Elimina</button>` : ''}
+          ${canModifica && !isSelf ? `<button class="btn btn-ghost btn-sm" onclick="openCambioPasswordUtente('${u.id}','${u.username}')">🔑 Password</button>` : ''}
+          ${canModifica && !isSelf ? `<button class="btn btn-ghost btn-sm" onclick="openCambioTipoAccount('${u.id}','${u.username}')">🏷 Tipo</button>` : ''}
+          ${canElimina  && !isSelf ? `<button class="btn btn-danger btn-sm" onclick="eliminaUtente('${u.id}','${u.username}')">🗑</button>` : ''}
         </div>
       </td>
     </tr>`;
   }).join('');
 
-  const vuoto = `<tr><td colspan="5" style="text-align:center;padding:32px;color:var(--muted)">Nessun utente.</td></tr>`;
-
   container.innerHTML = `
     <div class="utenti-toolbar">
       <h3>Gestione utenti</h3>
-      <div style="display:flex;gap:8px;">
-        <button class="btn btn-primary" onclick="openNuovoUtente('standard')">+ Nuovo utente standard</button>
-        <button class="btn btn-primary" onclick="openNuovoUtente('admin')">+ Nuovo admin</button>
-      </div>
+      ${canCrea ? `<button class="btn btn-primary" onclick="openNuovoUtente()">+ Nuovo utente</button>` : ''}
     </div>
     <div class="table-wrap">
       <table>
         <thead><tr>
-          <th>Username</th><th>Ruolo</th><th>Ultimo accesso</th><th>Creato il</th><th></th>
+          <th>Username</th><th>Tipo account</th><th>Ultimo accesso</th><th>Creato il</th><th></th>
         </tr></thead>
-        <tbody>${visibili.length > 0 ? righe : vuoto}</tbody>
+        <tbody>${utenti.length > 0 ? righe : '<tr><td colspan="5" style="text-align:center;padding:32px;color:var(--muted)">Nessun utente.</td></tr>'}</tbody>
       </table>
     </div>
   `;
@@ -106,54 +82,47 @@ export async function renderPannelloUtenti(containerId = _lastContainerId) {
 
 // ── Modal nuovo utente ────────────────────────────
 
-export function openNuovoUtente(ruoloDefault = 'standard') {
-  document.getElementById('nuovoUtenteRuolo').value    = ruoloDefault;
-  document.getElementById('nuovoUtenteUsername').value = '';
-  document.getElementById('nuovoUtentePassword').value = '';
+export function openNuovoUtente() {
+  const sel = document.getElementById('nuovoUtenteTipo');
+  sel.innerHTML = _tipi.map(t => `<option value="${t.id}">${t.nome}</option>`).join('');
+  document.getElementById('nuovoUtenteUsername').value    = '';
+  document.getElementById('nuovoUtentePassword').value    = '';
   document.getElementById('nuovoUtenteError').textContent = '';
   document.getElementById('modalNuovoUtente').classList.add('open');
   document.getElementById('nuovoUtenteUsername').focus();
 }
 
 export async function salvaNuovoUtente() {
-  const username = document.getElementById('nuovoUtenteUsername').value.trim();
-  const password = document.getElementById('nuovoUtentePassword').value;
-  const ruolo    = document.getElementById('nuovoUtenteRuolo').value;
-  const errEl    = document.getElementById('nuovoUtenteError');
+  const username        = document.getElementById('nuovoUtenteUsername').value.trim();
+  const password        = document.getElementById('nuovoUtentePassword').value;
+  const tipo_account_id = document.getElementById('nuovoUtenteTipo').value;
+  const errEl           = document.getElementById('nuovoUtenteError');
 
-  if (!username) { errEl.textContent = 'Inserisci username'; return; }
-  if (!password) { errEl.textContent = 'Inserisci password'; return; }
-  if (password.length < 8) { errEl.textContent = 'Password minimo 8 caratteri'; return; }
-
-  const password_hash = sha256(password);
+  if (!username)          { errEl.textContent = 'Inserisci username'; return; }
+  if (!password)          { errEl.textContent = 'Inserisci password'; return; }
+  if (password.length < 8){ errEl.textContent = 'Password minimo 8 caratteri'; return; }
+  if (!tipo_account_id)   { errEl.textContent = 'Seleziona un tipo account'; return; }
 
   try {
-    const r = await fetch(`${API}/utenti`, {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-      body:    JSON.stringify({ username, password_hash, ruolo }),
-    });
-    const data = await r.json();
-    if (!r.ok) { errEl.textContent = data.error || 'Errore creazione utente'; return; }
-
+    await createUtente({ username, password_hash: sha256(password), tipo_account_id });
     document.getElementById('modalNuovoUtente').classList.remove('open');
     toast(`Utente ${username} creato`);
-    renderPannelloUtenti();
-  } catch {
-    errEl.textContent = 'Server non raggiungibile';
+    renderPannelloAdmin(_containerId);
+  } catch (e) {
+    errEl.textContent = e.data?.error || e.message || 'Errore creazione utente';
   }
 }
 
-// ── Cambio password utente ────────────────────────
+// ── Cambio password ───────────────────────────────
 
 let _pwdTargetId = null;
 
 export function openCambioPasswordUtente(userId, username) {
   _pwdTargetId = userId;
-  document.getElementById('cpuTitle').textContent    = `Cambia password: ${username}`;
-  document.getElementById('cpuNuova').value          = '';
-  document.getElementById('cpuConferma').value       = '';
-  document.getElementById('cpuError').textContent   = '';
+  document.getElementById('cpuTitle').textContent  = `Cambia password: ${username}`;
+  document.getElementById('cpuNuova').value        = '';
+  document.getElementById('cpuConferma').value     = '';
+  document.getElementById('cpuError').textContent  = '';
   document.getElementById('modalCambioPasswordUtente').classList.add('open');
   document.getElementById('cpuNuova').focus();
 }
@@ -163,33 +132,44 @@ export async function salvaCambioPasswordUtente() {
   const conferma = document.getElementById('cpuConferma').value;
   const errEl    = document.getElementById('cpuError');
 
-  if (!nuova)            { errEl.textContent = 'Inserisci la nuova password'; return; }
-  if (nuova.length < 8)  { errEl.textContent = 'Password minimo 8 caratteri'; return; }
-  if (nuova !== conferma){ errEl.textContent = 'Le password non coincidono'; return; }
+  if (!nuova)             { errEl.textContent = 'Inserisci la nuova password'; return; }
+  if (nuova.length < 8)   { errEl.textContent = 'Password minimo 8 caratteri'; return; }
+  if (nuova !== conferma) { errEl.textContent = 'Le password non coincidono'; return; }
 
-  const result = await setPasswordUtente(_pwdTargetId, nuova);
-  if (!result.ok) { errEl.textContent = result.error; return; }
-
-  document.getElementById('modalCambioPasswordUtente').classList.remove('open');
-  toast('Password aggiornata');
+  try {
+    await setPasswordUtente(_pwdTargetId, sha256(nuova));
+    document.getElementById('modalCambioPasswordUtente').classList.remove('open');
+    toast('Password aggiornata');
+  } catch (e) {
+    errEl.textContent = e.data?.error || e.message || 'Errore';
+  }
 }
 
-// ── Declassa admin → standard ─────────────────────
+// ── Cambio tipo account ───────────────────────────
 
-export async function declassaAdmin(userId, username) {
-  if (!confirm(`Declassare "${username}" da Admin a Standard?\nL'utente perderà i permessi di gestione.`)) return;
+let _tipoTargetId = null;
+
+export function openCambioTipoAccount(userId, username) {
+  _tipoTargetId = userId;
+  const sel = document.getElementById('cambioTipoSelect');
+  sel.innerHTML = _tipi.map(t => `<option value="${t.id}">${t.nome}</option>`).join('');
+  document.getElementById('cambioTipoTitle').textContent = `Tipo account: ${username}`;
+  document.getElementById('cambioTipoError').textContent = '';
+  document.getElementById('modalCambioTipo').classList.add('open');
+}
+
+export async function salvaCambioTipoAccount() {
+  const tipo_account_id = document.getElementById('cambioTipoSelect').value;
+  const errEl           = document.getElementById('cambioTipoError');
+  if (!tipo_account_id) { errEl.textContent = 'Seleziona un tipo'; return; }
+
   try {
-    const r = await fetch(`${API}/utenti/${userId}/ruolo`, {
-      method:  'PUT',
-      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-      body:    JSON.stringify({ ruolo: 'standard' }),
-    });
-    const data = await r.json();
-    if (!r.ok) { toast(`Errore: ${data.error}`); return; }
-    toast(`${username} declassato a Standard`);
-    renderPannelloUtenti();
-  } catch {
-    toast('Server non raggiungibile');
+    await setTipoAccount(_tipoTargetId, tipo_account_id);
+    document.getElementById('modalCambioTipo').classList.remove('open');
+    toast('Tipo account aggiornato');
+    renderPannelloAdmin(_containerId);
+  } catch (e) {
+    errEl.textContent = e.data?.error || e.message || 'Errore';
   }
 }
 
@@ -198,25 +178,20 @@ export async function declassaAdmin(userId, username) {
 export async function eliminaUtente(userId, username) {
   if (!confirm(`Eliminare definitivamente l'utente "${username}"?\nL'operazione non è reversibile.`)) return;
   try {
-    const r = await fetch(`${API}/utenti/${userId}`, {
-      method:  'DELETE',
-      headers: { ...getAuthHeaders() },
-    });
-    const data = await r.json();
-    if (!r.ok) { toast(`Errore: ${data.error}`); return; }
+    await apiDeleteUtente(userId);
     toast(`Utente ${username} eliminato`);
-    renderPannelloUtenti();
-  } catch {
-    toast('Server non raggiungibile');
+    renderPannelloAdmin(_containerId);
+  } catch (e) {
+    toast(`Errore: ${e.data?.error || e.message}`);
   }
 }
 
 // ── Helpers ──────────────────────────────────────
 
-function fmtDatetime(isoStr) {
+function _fmtDatetime(isoStr) {
   if (!isoStr) return '—';
   const d = new Date(isoStr);
   if (isNaN(d)) return isoStr;
-  const pad = n => String(n).padStart(2, '0');
-  return `${pad(d.getDate())}/${pad(d.getMonth()+1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  const p = n => String(n).padStart(2, '0');
+  return `${p(d.getDate())}/${p(d.getMonth()+1)}/${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }

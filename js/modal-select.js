@@ -3,8 +3,8 @@
  */
 
 import { db } from './store.js';
-import { markDirty } from './sync.js';
-import { remoteLog } from './api.js';
+import { applyServerResponse, setSaving, syncOk, syncError } from './sync.js';
+import { assegnaConsegne } from './api.js';
 import { renderGiornata, renderSidebar, renderLista } from './render.js';
 import { fmtDate, toast, openModal, closeModal } from './utils.js';
 
@@ -22,10 +22,8 @@ export function renderSelectList() {
   const g        = db.giornate.find(x => x.id === selectGiornataId);
   const assigned = new Set(g ? g.consegneIds : []);
 
-  // Mostra solo le consegne disponibili: in attesa e da riprogrammare
-  // Le consegne "da_confermare" sono già assegnate a una giornata
   let candidates = db.consegne.filter(c =>
-    (c.stato === 'attesa' || c.stato === 'in_attesa' || c.stato === 'da_riprogrammare')
+    (c.stato === 'in_attesa' || c.stato === 'da_riprogrammare')
     && !assigned.has(c.id)
   );
   if (search) candidates = candidates.filter(c =>
@@ -48,26 +46,25 @@ export function renderSelectList() {
   `).join('');
 }
 
-export function confirmAddToGiornata() {
+export async function confirmAddToGiornata() {
   const g = db.giornate.find(x => x.id === selectGiornataId);
   if (!g) return;
   const checked = [...document.querySelectorAll('#selectList input[type=checkbox]:checked')];
   if (checked.length === 0) { toast('Seleziona almeno una consegna'); return; }
 
-  checked.forEach(cb => {
-    const cid = cb.value;
-    if (!g.consegneIds.includes(cid)) g.consegneIds.push(cid);
-    const c = db.consegne.find(x => x.id === cid);
-    if (c) {
-      c.stato          = 'da_confermare';
-      c.giornoConsegna = g.data;
-    }
-  });
-  markDirty();
-  remoteLog(`Aggiunte ${checked.length} consegne alla giornata ${g.data}`);
-  closeModal('modalSelect');
-  renderGiornata(selectGiornataId);
-  renderSidebar();
-  renderLista();
-  toast(`${checked.length} consegna/e aggiunta/e alla giornata`);
+  const ids = checked.map(cb => cb.value);
+  setSaving();
+  try {
+    const result = await assegnaConsegne(selectGiornataId, ids);
+    applyServerResponse(result);
+    closeModal('modalSelect');
+    renderGiornata(selectGiornataId);
+    renderSidebar();
+    renderLista();
+    toast(`${ids.length} consegna/e aggiunta/e alla giornata`);
+    syncOk();
+  } catch (e) {
+    syncError();
+    toast(`Errore: ${e.message}`);
+  }
 }

@@ -3,74 +3,74 @@
  */
 
 import { db, currentGiornataId, setCurrentGiornataId } from './store.js';
-import { markDirty } from './sync.js';
-import { remoteLog } from './api.js';
+import { applyServerResponse, setSaving, syncOk, syncError } from './sync.js';
+import { createGiornata, deleteGiornata as apiDeleteGiornata, rimuoviConsegna, segnaCompletata as apiSegna } from './api.js';
 import { renderGiornata, renderSidebar, renderLista, populateSquadreSelect } from './render.js';
 import { today, toast, openModal, closeModal } from './utils.js';
-import { uid } from './utils.js';
+import { hasPermesso } from './permessi.js';
 
-// ── Azioni card ──────────────────────────────────
+// ── Rimuovi consegna dalla giornata ──────────────
 
-export function removeFromGiornata(cid, gid) {
-  const g = db.giornate.find(x => x.id === gid);
-  if (!g) return;
-  g.consegneIds = (g.consegneIds || []).filter(id => id !== cid);
-  const c = db.consegne.find(x => x.id === cid);
-  if (c && (c.stato === 'programmata' || c.stato === 'da_confermare')) {
-    c.stato = 'in_attesa';
-    c.giornoConsegna = '';
-    c.fasciaOraria   = '';
+export async function removeFromGiornata(cid, gid) {
+  setSaving();
+  try {
+    const result = await rimuoviConsegna(gid, cid);
+    applyServerResponse(result);
+    renderGiornata(gid);
+    renderSidebar();
+    renderLista();
+    toast('Consegna rimossa dalla giornata → tornata in attesa');
+    syncOk();
+  } catch (e) {
+    syncError();
+    toast(`Errore: ${e.message}`);
   }
-  markDirty();
-  remoteLog(`Rimossa consegna ${c ? c.nome + ' ' + c.cognome : cid} dalla giornata ${g.data}`);
-  renderGiornata(gid);
-  renderSidebar();
-  renderLista();
-  toast('Consegna rimossa dalla giornata → tornata in attesa');
 }
 
-export function segnaConsegnata(cid, gid) {
-  const c = db.consegne.find(x => x.id === cid);
-  if (!c) return;
-  c.stato = 'completata';
-  markDirty();
-  remoteLog(`Consegna completata: ${c.cognome || ''} ${c.nome || ''}`);
-  renderGiornata(gid);
-  renderLista();
-  toast('Consegna segnata come completata ✅');
+// ── Segna consegna come completata ───────────────
+
+export async function segnaConsegnata(cid, gid) {
+  setSaving();
+  try {
+    const result = await apiSegna(gid, cid);
+    applyServerResponse(result);
+    renderGiornata(gid);
+    renderLista();
+    toast('Consegna segnata come completata ✅');
+    syncOk();
+  } catch (e) {
+    syncError();
+    toast(`Errore: ${e.message}`);
+  }
 }
 
-export function deleteGiornata(gid) {
+// ── Elimina giornata ─────────────────────────────
+
+export async function deleteGiornata(gid) {
   const g = db.giornate.find(x => x.id === gid);
   if (!g) return;
-
-  if (g.consegneIds && g.consegneIds.length > 0) {
-    toast('Impossibile eliminare la giornata: contiene consegne assegnate. Rimuovi prima le consegne.');
-    return;
-  }
   if (!confirm('Eliminare questa giornata? Le consegne assegnate torneranno "In attesa".')) return;
 
-  (g.consegneIds || []).forEach(cid => {
-    const c = db.consegne.find(x => x.id === cid);
-    if (c && (c.stato === 'programmata' || c.stato === 'da_confermare')) {
-      c.stato = 'in_attesa';
-      c.giornoConsegna = '';
-    }
-  });
-  db.giornate = db.giornate.filter(x => x.id !== gid);
+  setSaving();
+  try {
+    const result = await apiDeleteGiornata(gid);
+    applyServerResponse(result);
 
-  if (currentGiornataId === gid) {
-    setCurrentGiornataId(null);
-    document.getElementById('noGiornata').style.display   = '';
-    document.getElementById('giornataWrap').style.display = 'none';
-    document.getElementById('giornataTitle').textContent  = 'Giornate di consegna';
-    document.getElementById('btnStampaPDF').style.display = 'none';
+    if (currentGiornataId === gid) {
+      setCurrentGiornataId(null);
+      document.getElementById('noGiornata').style.display   = '';
+      document.getElementById('giornataWrap').style.display = 'none';
+      document.getElementById('giornataTitle').textContent  = 'Giornate di consegna';
+      document.getElementById('btnStampaPDF').style.display = 'none';
+    }
+    renderSidebar();
+    renderLista();
+    toast('Giornata eliminata');
+    syncOk();
+  } catch (e) {
+    syncError();
+    toast(`Errore: ${e.message}`);
   }
-  markDirty();
-  remoteLog(`Eliminata giornata ${g.data}`);
-  renderSidebar();
-  renderLista();
-  toast('Giornata eliminata');
 }
 
 // ── Modal nuova giornata ─────────────────────────
@@ -81,27 +81,41 @@ export function openNewGiornataModal() {
   openModal('modalGiornata');
 }
 
-export function saveNuovaGiornata() {
+export async function saveNuovaGiornata() {
   const data    = document.getElementById('f_nuovaGiornata').value;
   if (!data) { toast('Inserisci una data'); return; }
   const squadra = document.getElementById('f_nuovaGiornataSquadra').value;
-  const g = { id: uid(), data, squadra, consegneIds: [] };
-  db.giornate.push(g);
-  markDirty();
-  remoteLog(`Aggiunta giornata ${data}`);
-  closeModal('modalGiornata');
-  renderSidebar();
 
-  // Seleziona la nuova giornata e passa alla vista giornate
-  setCurrentGiornataId(g.id);
-  renderGiornata(g.id);
-  document.getElementById('noGiornata').style.display   = 'none';
-  document.getElementById('giornataWrap').style.display = '';
-  document.getElementById('btnStampaPDF').style.display = '';
+  setSaving();
+  try {
+    const result = await createGiornata({ data, squadra });
+    applyServerResponse(result);
 
-  // Switcha alla tab giornate se non già attiva
-  const tabGiornate = document.querySelector('.nav-tab:nth-child(2)');
-  if (tabGiornate) tabGiornate.click();
+    // Trova la giornata appena creata
+    const nuova = result.giornate?.find(g => g.data === data && !db.giornate.find(x => x.id === g.id));
+    const newId = nuova?.id || result.giornate?.find(g => g.data === data)?.id;
 
-  toast(`Giornata del ${data} aggiunta`);
+    closeModal('modalGiornata');
+    renderSidebar();
+
+    if (newId) {
+      setCurrentGiornataId(newId);
+      renderGiornata(newId);
+      document.getElementById('noGiornata').style.display   = 'none';
+      document.getElementById('giornataWrap').style.display = '';
+      if (hasPermesso('stampa.pdf')) {
+        document.getElementById('btnStampaPDF').style.display = '';
+      }
+    }
+
+    // Switcha alla tab giornate se non già attiva
+    const tabGiornate = document.querySelector('.nav-tab[data-view="giornate"]');
+    if (tabGiornate) tabGiornate.click();
+
+    toast(`Giornata del ${data} aggiunta`);
+    syncOk();
+  } catch (e) {
+    syncError();
+    toast(`Errore: ${e.message}`);
+  }
 }
