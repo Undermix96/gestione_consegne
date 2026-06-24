@@ -397,15 +397,43 @@ async function _adminSalvaUtente() {
 }
 
 async function _adminPwd(userId, username) {
-  const nuova = prompt(`Nuova password per "${username}" (min. 8 caratteri):`);
-  if (!nuova) return;
-  if (nuova.length < 8) { toast('Password troppo corta (min. 8 caratteri)'); return; }
-  try {
-    await setPasswordUtente(userId, sha256(nuova));
-    toast(`Password di ${username} aggiornata`);
-  } catch (e) {
-    toast(`Errore: ${e.data?.error || e.message}`);
-  }
+  const wrap = document.getElementById('adminUtenteForm');
+  wrap.innerHTML = `
+    <h4>Cambia password: ${username}</h4>
+    <div class="form-grid-2">
+      <div>
+        <label>Nuova password <span class="muted" style="font-weight:400;font-size:11px;">(min. 8 caratteri)</span></label>
+        <input id="adminPwdNuova" type="password" placeholder="nuova password" autocomplete="new-password"/>
+      </div>
+      <div>
+        <label>Conferma password</label>
+        <input id="adminPwdConferma" type="password" placeholder="ripeti la nuova password"/>
+      </div>
+    </div>
+    <div id="adminPwdErr" style="color:var(--cancel);margin-top:8px;"></div>
+    <div style="display:flex;gap:8px;margin-top:12px;">
+      <button class="btn btn-primary" onclick="_adminSalvaPwd('${userId}')">Salva password</button>
+      <button class="btn btn-ghost" onclick="document.getElementById('adminUtenteForm').style.display='none'">Annulla</button>
+    </div>
+  `;
+  wrap.style.display = '';
+  document.getElementById('adminPwdNuova').focus();
+
+  window._adminSalvaPwd = async (uid) => {
+    const nuova    = document.getElementById('adminPwdNuova').value;
+    const conferma = document.getElementById('adminPwdConferma').value;
+    const errEl    = document.getElementById('adminPwdErr');
+    if (!nuova)             { errEl.textContent = 'Inserisci la nuova password'; return; }
+    if (nuova.length < 8)   { errEl.textContent = 'Password minimo 8 caratteri'; return; }
+    if (nuova !== conferma) { errEl.textContent = 'Le password non coincidono'; return; }
+    try {
+      await setPasswordUtente(uid, sha256(nuova));
+      wrap.style.display = 'none';
+      toast(`Password di ${username} aggiornata`);
+    } catch (e) {
+      errEl.textContent = e.data?.error || e.message || 'Errore';
+    }
+  };
 }
 
 async function _adminTipo(userId, username) {
