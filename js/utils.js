@@ -107,11 +107,21 @@ export function squadraBadgeForConsegna(cid) {
 
 // ── Toast ────────────────────────────────────────
 
+let _toastTimer = null;
+
 export function toast(msg) {
   const el = document.getElementById('toast');
+  // Cancella il timer precedente: ogni nuovo toast reimposta il countdown
+  if (_toastTimer) {
+    clearTimeout(_toastTimer);
+    _toastTimer = null;
+  }
   el.textContent = msg;
   el.classList.add('show');
-  setTimeout(() => el.classList.remove('show'), 2800);
+  _toastTimer = setTimeout(() => {
+    el.classList.remove('show');
+    _toastTimer = null;
+  }, 2800);
 }
 
 // ── Modal helpers ────────────────────────────────
