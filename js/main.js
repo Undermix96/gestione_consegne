@@ -135,10 +135,14 @@ function _applicaPermessiUI() {
     btnNuovaConsegna.style.display = hasPermesso('consegne.scrivi') ? '' : 'none';
   }
 
-  // Bottone nuova giornata
+  // Bottone nuova giornata (sidebar + barra vista)
   const btnNuovaGiornata = document.getElementById('btnNuovaGiornata');
   if (btnNuovaGiornata) {
     btnNuovaGiornata.style.display = hasPermesso('giornate.crea') ? '' : 'none';
+  }
+  const btnNuovaGiornataBar = document.getElementById('btnNuovaGiornataBar');
+  if (btnNuovaGiornataBar) {
+    btnNuovaGiornataBar.style.display = hasPermesso('giornate.crea') ? '' : 'none';
   }
 
   // Bottone stampa PDF

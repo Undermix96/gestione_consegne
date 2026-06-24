@@ -1117,7 +1117,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 if client_ver is not None and client_ver != target.get("versione", 1):
                     self._json_response(409, {"error": "Conflitto: la consegna è stata modificata da un altro utente. Ricarica e riprova."})
                     return
-                target.update({k: v for k, v in body.items() if k not in ("id", "negozio_id")})
+                target.update({k: v for k, v in body.items() if k not in ("id", "negozio_id", "versione")})
                 target["versione"] = target.get("versione", 1) + 1
                 _write_data_raw(data)
             touch_timestamp("consegne")

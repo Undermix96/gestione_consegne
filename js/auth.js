@@ -170,6 +170,7 @@ export function initAuthUI() {
     btnEl.disabled    = true;
     btnEl.textContent = 'Accesso in corso…';
     errEl.textContent = '';
+    errEl.style.color = '';
 
     const result = await login(username, password);
 

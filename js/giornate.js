@@ -89,11 +89,15 @@ export async function saveNuovaGiornata() {
   setSaving();
   try {
     const result = await createGiornata({ data, squadra });
+
+    // Salva gli id esistenti PRIMA di aggiornare lo store,
+    // così possiamo identificare quale giornata è quella appena creata.
+    const idsPrecedenti = new Set(db.giornate.map(g => g.id));
     applyServerResponse(result);
 
-    // Trova la giornata appena creata
-    const nuova = result.giornate?.find(g => g.data === data && !db.giornate.find(x => x.id === g.id));
-    const newId = nuova?.id || result.giornate?.find(g => g.data === data)?.id;
+    // La giornata nuova è quella presente nella risposta ma non nel db precedente
+    const nuova = result.giornate?.find(g => !idsPrecedenti.has(g.id));
+    const newId = nuova?.id;
 
     closeModal('modalGiornata');
     renderSidebar();

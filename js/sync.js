@@ -88,29 +88,35 @@ export async function pollData() {
   if (!serverOnline) return;
   try {
     const stato = await fetchStato();
-    let changed = false;
+    let changed     = false;
+    // Accumula tutti i cambiamenti prima di fare un unico setDb.
+    // db è un riferimento snapshot al momento dell'import: usarlo in setDb
+    // dopo ogni await sovrascriverebbe i cambiamenti precedenti.
+    const newDb     = { ...db };
+    const newTs     = { ...localTimestamps };
 
     if (stato.consegne > (localTimestamps.consegne || 0)) {
       const r = await fetchConsegne();
-      setDb({ ...db, consegne: r.consegne || [] });
-      setLocalTimestamps({ ...localTimestamps, consegne: stato.consegne });
+      newDb.consegne = r.consegne || [];
+      newTs.consegne = stato.consegne;
       changed = true;
     }
     if (stato.giornate > (localTimestamps.giornate || 0)) {
       const r = await fetchGiornate();
-      setDb({ ...db, giornate: r.giornate || [] });
-      setLocalTimestamps({ ...localTimestamps, giornate: stato.giornate });
+      newDb.giornate = r.giornate || [];
+      newTs.giornate = stato.giornate;
       changed = true;
     }
     if (stato.squadre > (localTimestamps.squadre || 0)) {
       const r = await fetchSquadre();
-      setDb({ ...db, squadre: r.squadre || [] });
-      setLocalTimestamps({ ...localTimestamps, squadre: stato.squadre });
+      newDb.squadre  = r.squadre || [];
+      newTs.squadre  = stato.squadre;
       changed = true;
     }
 
     if (changed) {
-      // Notifica main.js di fare un render
+      setDb(newDb);
+      setLocalTimestamps(newTs);
       window._onPollUpdate?.();
     }
   } catch {
