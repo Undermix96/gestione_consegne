@@ -15,7 +15,7 @@ import {
   initAuthUI, showLoginOverlay, isLoggedIn,
   getUsername, getUserId, getNegozioId,
   getPermessi, isSuperadmin, logout,
-  showChangePasswordOverlay, changePassword,
+  showChangePasswordOverlay,
 } from './auth.js';
 import { hasPermesso } from './permessi.js';
 

@@ -13,8 +13,6 @@ Gestione Consegne — Server v2
 import http.server
 import json
 import os
-import sys
-import re
 import socket
 import threading
 import time
@@ -36,7 +34,6 @@ BACKUP_DIR    = os.path.join(BASE_DIR, "backup")
 LOG_FILE      = os.path.join(BASE_DIR, "gestionale.log")
 MAX_BACKUPS   = 20
 LOG_DAYS      = 7
-WRITE_RETRIES = 2
 SESSION_TTL   = 7200   # 2 ore
 CHALLENGE_TTL = 60     # 60 secondi
 
@@ -404,14 +401,6 @@ def remove_lock():
         log(f"Impossibile rimuovere lock: {e}", "warning")
 
 # ─── CRASH ───────────────────────────────────────────────────────────────────
-
-def crash_server(reason):
-    log(f"CRASH SERVER: {reason}", "critical")
-    remove_lock()
-    update_tray_error(reason)
-    notify_crash(reason)
-    time.sleep(2)
-    os._exit(1)
 
 # ─── CONNECTED CLIENTS ───────────────────────────────────────────────────────
 
@@ -1365,21 +1354,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         data = read_data()
         squadre = [s for s in data.get("squadre", []) if s.get("negozio_id") == nid]
         self._json_response(200, {"squadre": squadre})
-
-    def _handle_get_squadre_or_create(self):
-        pass  # gestito nel routing
-
-    def _squadre_write(self, session, body, action):
-        """Helper per create/update/delete squadre."""
-        nid = self._session_negozio(session)
-        with file_lock:
-            data = _read_json(DATA_FILE, {"consegne": [], "giornate": [], "squadre": []})
-            result = action(data, nid)
-            if result is None:
-                return
-            _write_data_raw(data)
-        touch_timestamp("squadre")
-        return self._db_risposta(nid)
 
     def do_POST_squadra(self):
         session = self._check_auth()

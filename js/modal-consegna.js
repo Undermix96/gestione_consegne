@@ -26,7 +26,9 @@ export function openEditConsegnaModal(id) {
   if (!c) return;
   setEditingConsegnaId(id);
   document.getElementById('modalConsegnaTitle').textContent  = 'Modifica consegna';
-  document.getElementById('btnDeleteConsegna').style.display = '';
+  const btnDel = document.getElementById('btnDeleteConsegna');
+  btnDel.style.display = '';
+  btnDel.onclick = () => deleteCurrentConsegna(id);
   fillConsegnaForm(c);
   resetCounters();
   openModal('modalConsegna');
@@ -190,15 +192,14 @@ export async function saveConsegna() {
 // ── Delete ───────────────────────────────────────
 
 export async function deleteCurrentConsegna(id) {
-  const cid = id || editingConsegnaId;
-  if (!cid) return;
-  const c = db.consegne.find(x => x.id === cid);
-  if (!confirm(`Eliminare definitivamente la consegna di ${c ? c.cognome + ' ' + c.nome : cid}? L'operazione non è reversibile.`)) return;
+  if (!id) return;
+  const c = db.consegne.find(x => x.id === id);
+  if (!confirm(`Eliminare definitivamente la consegna di ${c ? c.cognome + ' ' + c.nome : id}? L'operazione non è reversibile.`)) return;
   setSaving();
   try {
-    const result = await deleteConsegna(cid);
+    const result = await deleteConsegna(id);
     applyServerResponse(result);
-    if (editingConsegnaId === cid) closeModal('modalConsegna');
+    if (editingConsegnaId === id) closeModal('modalConsegna');
     renderAll();
     toast('Consegna eliminata');
     syncOk();
