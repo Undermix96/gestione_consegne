@@ -102,7 +102,7 @@ export function addArticoloRow(tipo = '', codice = '', desc = '', tipoConsegna =
   const opts = [
     ['consegna',      '📦 Solo consegna'],
     ['installazione', '🔧 Installaz. semplice'],
-    ['incasso',       '🔩 Incasso/muro'],
+    ['incasso',       '🔩 Incasso - Muro - SBS'],
   ];
   const selectHtml = opts.map(([v, l]) =>
     `<option value="${v}"${v === tipoConsegna ? ' selected' : ''}>${l}</option>`

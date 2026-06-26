@@ -12,7 +12,7 @@ export function stampaPDF() {
   const tipoLabel = {
     consegna:      'Solo consegna',
     installazione: 'Installazione semplice',
-    incasso:       'Installazione a incasso/muro',
+    incasso:       'Incasso - Muro - SBS',
   };
 
   const consegne = (g.consegneIds || [])
