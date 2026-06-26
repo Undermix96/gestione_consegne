@@ -58,7 +58,7 @@ export function tipoBadge(tipo) {
   const map = {
     consegna:      ['tipo-consegna',  '📦 Solo consegna'],
     installazione: ['tipo-installaz', '🔧 Installaz. semplice'],
-    incasso:       ['tipo-incasso',   '🔩 Incasso/muro'],
+    incasso:       ['tipo-incasso',   '🔩 Incasso - Muro - SBS'],
   };
   const [cls, label] = map[tipo] || ['tipo-consegna', tipo || '—'];
   return `<span class="tipo-badge ${cls}">${label}</span>`;
