@@ -12,7 +12,11 @@ export function stampaPDF() {
   const tipoLabel = {
     consegna:      'Solo consegna',
     installazione: 'Installazione semplice',
+    // ⚠️ 'incasso' mantenuto solo per retrocompatibilità con record esistenti
     incasso:       'Incasso - Muro - SBS',
+    ins_incasso:   'Installazione ad Incasso',
+    ins_muro:      'Installazione a Muro',
+    ins_sbs:       'Installazione Side-by-Side',
   };
 
   const consegne = (g.consegneIds || [])

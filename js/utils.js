@@ -56,9 +56,14 @@ export function statoPill(stato) {
 
 export function tipoBadge(tipo) {
   const map = {
-    consegna:      ['tipo-consegna',  '📦 Solo consegna'],
-    installazione: ['tipo-installaz', '🔧 Installaz. semplice'],
-    incasso:       ['tipo-incasso',   '🔩 Incasso - Muro - SBS'],
+    consegna:        ['tipo-consegna',    '📦 Solo consegna'],
+    installazione:   ['tipo-installaz',   '🔧 Installaz. semplice'],
+    // ⚠️ 'incasso' mantenuto solo per retrocompatibilità — non più selezionabile dall'utente
+    incasso:         ['tipo-incasso',     '🔩 Incasso - Muro - SBS'],
+    // nuovi tipi (da versione con articoli separati per tipo installazione)
+    ins_incasso:     ['tipo-ins-incasso', '🔩 Installazione ad Incasso'],
+    ins_muro:        ['tipo-ins-muro',    '🧱 Installazione a Muro'],
+    ins_sbs:         ['tipo-ins-sbs',     '↔️ Installazione Side-by-Side'],
   };
   const [cls, label] = map[tipo] || ['tipo-consegna', tipo || '—'];
   return `<span class="tipo-badge ${cls}">${label}</span>`;
@@ -88,7 +93,8 @@ export function articoliLabel(c) {
 export function tipiConsegnaBadges(c) {
   let tipi;
   if (c.articoli && c.articoli.length > 0) {
-    const order = ['incasso', 'installazione', 'consegna'];
+    // ordine per "peso" decrescente: i tipi di installazione specifica prima, poi semplice, poi consegna
+    const order = ['incasso', 'ins_incasso', 'ins_muro', 'ins_sbs', 'installazione', 'consegna'];
     const seen  = new Set(c.articoli.map(a => a.tipoConsegna || 'consegna'));
     tipi = order.filter(t => seen.has(t));
   } else if (c.tipoConsegna) {

@@ -241,7 +241,7 @@ Campi del form (tutti in `f_[nome]`):
 - `f_piano`, `f_noteAbitazione` (textarea, max 170 caratteri), `f_preferenzePeriodo` (textarea, max 90 caratteri)
 - `f_giornataAssegnata_display` (sola lettura), `f_fasciaOraria` (text), `f_note` (textarea, max 170 caratteri)
 - **Sezione articoli** (`#articoliList`): lista dinamica di righe `.articolo-row`, ognuna con 5 colonne:
-  - `data-art="tipoConsegna"` (select: consegna / installazione / incasso)
+  - `data-art="tipoConsegna"` (select: consegna / installazione / ins_incasso / ins_muro / ins_sbs — il valore "incasso" non appare nei nuovi select, solo se già presente nel record)
   - `data-art="tipo"` (input text — tipologia prodotto)
   - `data-art="codice"` (input text — SKU/codice)
   - `data-art="desc"` (input text — descrizione estesa)
@@ -306,9 +306,11 @@ I tre textarea hanno contatori caratteri in tempo reale: gialli all'85% del limi
 ### Campo `articoli` (sostituisce i vecchi campi singoli)
 Ogni elemento dell'array ha la struttura:
 ```json
-{ "tipoConsegna": "consegna|installazione|incasso", "tipo": "string", "codice": "string", "desc": "string" }
+{ "tipoConsegna": "consegna|installazione|ins_incasso|ins_muro|ins_sbs", "tipo": "string", "codice": "string", "desc": "string" }
 ```
 Tutti i campi sono opzionali (stringa vuota se non compilati). `tipoConsegna` default a `"consegna"` se assente. Un record può avere zero o più articoli.
+
+> ⚠️ Il valore `"incasso"` (ex "Incasso - Muro - SBS") è **deprecato** e non più selezionabile dall'utente, ma è mantenuto per retrocompatibilità: i record esistenti con `"incasso"` vengono visualizzati correttamente ovunque (lista, dettaglio, stampa PDF, modal di modifica). Nel modal di modifica, se un articolo ha `tipoConsegna = "incasso"`, l'opzione appare nel select solo per quel record con etichetta "legacy".
 
 > ⚠️ `tipoConsegna` **non esiste più come campo di primo livello** della consegna. È esclusivamente un attributo per-articolo. Questo permette consegne miste (es. TV a incasso + lavatrice con installazione semplice allo stesso cliente).
 
@@ -322,7 +324,7 @@ Al primo salvataggio di una consegna migrata, i campi vecchi vengono rimossi e s
 
 ### Valori enum
 - `stato`: `"in_attesa"` | `"da_confermare"` | `"programmata"` | `"completata"` | `"annullata"` | `"da_riprogrammare"`
-- `tipoConsegna`: `"consegna"` | `"installazione"` | `"incasso"`
+- `tipoConsegna`: `"consegna"` | `"installazione"` | `"ins_incasso"` | `"ins_muro"` | `"ins_sbs"` | ~~`"incasso"`~~ *(deprecato — solo retrocompatibilità, non più selezionabile)*
 - `raee`: `"si"` | `"no"`
 - `colorIdx`: `0`..`7` (indice nella palette `--sqN`)
 

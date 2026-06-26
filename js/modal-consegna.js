@@ -99,12 +99,23 @@ export function addArticoloRow(tipo = '', codice = '', desc = '', tipoConsegna =
   const list = document.getElementById('articoliList');
   const row  = document.createElement('div');
   row.className = 'articolo-row';
+
+  // Opzioni selezionabili dall'utente (senza 'incasso' — deprecato ma retrocompatibile)
   const opts = [
     ['consegna',      '📦 Solo consegna'],
     ['installazione', '🔧 Installaz. semplice'],
-    ['incasso',       '🔩 Incasso - Muro - SBS'],
+    ['ins_incasso',   '🔩 Installazione ad Incasso'],
+    ['ins_muro',      '🧱 Installazione a Muro'],
+    ['ins_sbs',       '↔️ Installazione Side-by-Side'],
   ];
-  const selectHtml = opts.map(([v, l]) =>
+
+  // Se il record caricato ha il vecchio valore 'incasso', aggiungiamo l'opzione
+  // solo per visualizzarlo correttamente — non appare nei nuovi record
+  const allOpts = tipoConsegna === 'incasso'
+    ? [['incasso', '🔩 Incasso - Muro - SBS (legacy)'], ...opts]
+    : opts;
+
+  const selectHtml = allOpts.map(([v, l]) =>
     `<option value="${v}"${v === tipoConsegna ? ' selected' : ''}>${l}</option>`
   ).join('');
   row.innerHTML = `

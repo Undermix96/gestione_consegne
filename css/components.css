@@ -65,9 +65,13 @@
   font-weight: 600;
   white-space: nowrap;
 }
-.tipo-consegna  { background: rgba(79,138,255,.15); color: var(--accent); }
-.tipo-installaz { background: rgba(124,92,252,.15); color: var(--accent2); }
-.tipo-incasso   { background: rgba(245,158,11,.15); color: var(--wait); }
+.tipo-consegna    { background: rgba(79,138,255,.15); color: var(--accent); }
+.tipo-installaz   { background: rgba(124,92,252,.15); color: var(--accent2); }
+/* ⚠️ tipo-incasso mantenuto per retrocompatibilità — non più selezionabile dall'utente */
+.tipo-incasso     { background: rgba(245,158,11,.15); color: var(--wait); }
+.tipo-ins-incasso { background: rgba(245,158,11,.18); color: var(--wait); }
+.tipo-ins-muro    { background: rgba(239,68,68,.15);  color: var(--cancel); }
+.tipo-ins-sbs     { background: rgba(6,182,212,.15);  color: #06b6d4; }
 
 /* ── SQUADRA BADGE ── */
 .sq-badge {
