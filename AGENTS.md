@@ -1,432 +1,611 @@
 # AGENTS.md — Gestione Consegne
 
-Documento di contesto per agenti AI. Descrive in dettaglio lo stato attuale del progetto, l'architettura, le decisioni prese e le convenzioni adottate.
+Documento di contesto per agenti AI. Descrive stato attuale del progetto, architettura, decisioni prese, convenzioni adottate, piano di upgrade V2 e istruzioni operative per l'agente.
 
 ---
 
-## 1. Descrizione del progetto
+## Indice
 
-**Gestione Consegne** è un gestionale web locale per organizzare le consegne di prodotti di elettronica effettuate da squadre di consegna. È utilizzato da un'azienda con più squadre operative.
+1. [Istruzioni operative per l'agente AI](#1-istruzioni-operative)
+2. [Descrizione del progetto](#2-descrizione-del-progetto)
+3. [Struttura dei file](#3-struttura-dei-file)
+4. [Architettura Docker](#4-architettura-docker)
+5. [Server Python](#5-server-python)
+6. [Storage layer](#6-storage-layer)
+7. [Frontend](#7-frontend)
+8. [Struttura dati](#8-struttura-dati)
+9. [Flusso operativo tipico](#9-flusso-operativo-tipico)
+10. [Decisioni progettuali già prese](#10-decisioni-progettuali-già-prese)
+11. [Piano upgrade V2](#11-piano-upgrade-v2)
+12. [Commit message convention](#12-commit-message-convention)
 
-### Utenti
-- 4+ operatori che accedono da PC diversi sulla stessa LAN
+---
+
+## 1. Istruzioni operative per l'agente AI
+
+### 1.1 Pianifica prima di agire — autorizzazione obbligatoria
+
+**Non modificare mai file senza autorizzazione esplicita dell'utente.**
+
+1. Analizza la richiesta e identifica tutti i file coinvolti
+2. Esponi il piano: cosa cambia, dove, perché
+3. Attendi conferma esplicita prima di scrivere qualsiasi file
+
+### 1.2 Preferisci modifiche chirurgiche al refactoring
+
+- Usa `str_replace` per porzioni specifiche invece di riscrivere l'intero file
+- Riscrivi un file intero solo se la modifica tocca più del 60% del contenuto
+- Quando riscrivi un file intero, segnalalo e spiega perché
+
+### 1.3 Revisione obbligatoria dopo ogni modifica
+
+1. Rileggi ogni blocco modificato nel contesto del file completo
+2. Cerca attivamente errori di sintassi, logica, coerenza
+3. Verifica nomi di funzioni, variabili, endpoint tra tutti i file toccati
+4. Se non trovi errori, dillo esplicitamente
+
+### 1.4 Non inventare — chiedi o cerca
+
+- Non inventare risposte plausibili e presentarle come certe
+- Chiedi se il dubbio riguarda una scelta progettuale
+- Cerca online se il dubbio riguarda un fatto tecnico verificabile
+
+### 1.5 File critici — attenzione massima
+
+| File | Rischio |
+|---|---|
+| `server.py` | Un errore di sintassi blocca il server per tutti |
+| `storage.py` | Un errore rompe la persistenza dei dati per tutti i backend |
+| `js/api.js` + `js/sync.js` | Un errore blocca la comunicazione client-server |
+| `js/store.js` | Un errore rompe lo stato globale dell'intera app |
+| `Dockerfile` | Un errore impedisce il build dell'immagine |
+| `compose.yaml` | Un errore impedisce l'avvio dei container |
+
+### 1.6 Aggiorna la documentazione insieme al codice
+
+Ogni volta che una modifica cambia endpoint, strutture dati, o decisioni progettuali, aggiorna le sezioni corrispondenti di questo file e di `README.md`.
+
+---
+
+## 2. Descrizione del progetto
+
+**Gestione Consegne** è un gestionale web per organizzare le consegne di prodotti di elettronica effettuate da squadre di consegna. Distribuito come container Docker, accessibile via browser da qualsiasi client nella stessa rete.
+
+### Utenti (V1 attuale)
+- Accesso anonimo: chiunque sulla LAN può leggere e scrivere
 - Uso sporadico: 5-10 minuti alla volta, alcune volte al giorno
 - Raramente due utenti lavorano contemporaneamente
-- I PC vengono accesi e spenti in ordine casuale, nessuno è sempre attivo
 
-### Vincoli fondamentali (NON modificare senza approvazione esplicita)
-- **Nessuna installazione** di programmi, librerie o ambienti di runtime sui PC client
-- **Nessun cloud**: dati privati, non possono uscire dalla rete locale
-- **Nessun server centrale fisso**: qualsiasi PC può fare da server
-- **Integrità dei dati assoluta**: il programma è usato per lavoro
-- **Windows 11** come unico OS target
-- **Python embedded** incluso nella cartella — nessuna dipendenza di sistema
+### Versione corrente: V1 (Docker)
+- Nessuna autenticazione
+- Backend dati selezionabile: JSON / MySQL / PostgreSQL
+- API: due endpoint unici (`GET /api/data`, `POST /api/data`)
+- Frontend invariato rispetto all'originale Windows
 
 ---
 
-## 2. Struttura dei file
+## 3. Struttura dei file
 
 ```
-cartella_gestionale/          ← cartella condivisa su rete Windows (SMB)
-├── index.html                ← intera applicazione frontend (single file)
-├── server.py                 ← server HTTP Python
-├── avvia.bat                 ← launcher (doppio click per avviare)
-├── avvia.ps1                 ← launcher PowerShell (chiamato dal bat)
-├── configura_firewall.bat    ← one-shot, eseguire SOLO la prima volta sul PC server
-├── dati.json                 ← database principale (JSON)
-├── server.lock               ← file di presenza server (creato/rimosso automaticamente)
-├── gestionale.log            ← log operazioni (rotazione 7 giorni)
-├── python_embed/             ← Python 3.13 embeddable (portabile, no installazione)
-│   ├── python.exe
-│   ├── pythonw.exe
-│   ├── python313.zip
-│   ├── Lib/site-packages/    ← pystray + Pillow installati qui
-│   └── ...
-└── backup/                   ← snapshot automatici del dati.json
-    ├── dati.2024-03-22_14-35-00.json
-    └── ... (max 20 file, i più vecchi vengono eliminati)
+gestione_consegne/
+├── server.py               # Server HTTP e logica backend
+├── storage.py              # Astrazione backend dati (json/mysql/postgres)
+├── import_data.py          # Importazione one-shot da dati.json legacy
+├── requirements.txt        # Dipendenze Python
+├── Dockerfile              # Immagine Docker (python:3.13-slim-bookworm)
+├── compose.yaml            # Orchestrazione (profili: mysql, postgres)
+├── index.html              # Shell HTML
+├── css/
+│   ├── theme.css
+│   ├── layout.css
+│   └── components.css
+└── js/
+    ├── main.js             # Entry point
+    ├── store.js            # Stato globale
+    ├── api.js              # Layer HTTP
+    ├── sync.js             # Sync dati e ping
+    ├── render.js           # Rendering viste
+    ├── utils.js            # Helper puri
+    ├── theme.js            # Gestione tema
+    ├── dragdrop.js         # Drag & drop
+    ├── giornate.js         # Logica giornate
+    ├── modal-consegna.js   # Modal consegna
+    ├── modal-select.js     # Modal selezione
+    ├── squadre.js          # CRUD squadre
+    └── stampa.js           # Stampa PDF
 ```
 
 ---
 
-## 3. Architettura
+## 4. Architettura Docker
 
-### Modello server unico con auto-discovery
+### Immagine base
+`python:3.13-slim-bookworm` — Debian Bookworm minimal, glibc (necessario per psycopg2-binary e mysql-connector).
 
-Un solo server alla volta può essere attivo. Il meccanismo si basa su `server.lock`:
-
-1. `avvia.bat` lancia `avvia.ps1`
-2. `avvia.ps1` controlla se `server.lock` esiste nella cartella condivisa
-3. Se esiste → legge l'IP dal lock → testa `http://{IP}:8742/api/ping`
-   - Se risponde → apre il browser su `http://{IP}:8742/index.html` e termina
-   - Se non risponde → lock stale, lo elimina, procede al punto 4
-4. Se non esiste → cerca Python (priorità: `python_embed/python.exe` → PATH → MS Store → installazioni standard) → avvia `server.py` in background (invisibile, nessuna finestra nera) → attende max 10s che il server risponda → apre il browser
+### Sicurezza container
+- Utente non-root: `appuser` (UID 1001, GID 1001, shell `/bin/false`)
+- `read_only: true` nel compose (filesystem in sola lettura)
+- `/tmp` come tmpfs
+- DB non esposto sull'host (solo rete interna Docker)
+- `DB_PASSWORD` obbligatorio tramite `.env`, mai hardcoded
 
 ### Porta
-`8742` — non standard, scelta per evitare conflitti. Il server ascolta su `0.0.0.0` (tutte le interfacce), quindi accetta connessioni da tutta la LAN.
+`8080` interna. Mappata sull'host tramite `APP_PORT` nel `.env` (default `8080`).
 
-### Firewall
-La porta 8742 deve essere aperta in ingresso sul PC che fa da server. Si usa `configura_firewall.bat` (eseguito una volta sola con UAC). Il codice UAC è stato rimosso da `avvia.ps1` intenzionalmente — non deve richiedere UAC ad ogni avvio.
+### Healthcheck
+```
+GET http://localhost:8080/api/ping → 200 OK
+interval: 15s | timeout: 5s | start-period: 15s | retries: 3
+```
+Implementato in Python puro (stdlib `urllib.request`) — nessuna dipendenza da curl.
 
-### Client (browser)
-I client non usano `avvia.bat`. Aprono direttamente il browser su `http://{IP-server}:8742/index.html`. L'URL dell'API è dinamico: `http://${window.location.hostname}:8742/api` — si adatta automaticamente all'IP da cui è stata caricata la pagina.
+### Profili compose
+| Comando | Backend |
+|---------|---------|
+| `docker compose up -d` | JSON |
+| `docker compose --profile mysql up -d` | MySQL 8.4 |
+| `docker compose --profile postgres up -d` | PostgreSQL 16-alpine |
+
+### Importazione dati legacy
+```bash
+docker compose run --rm \
+  -v ./dati.json:/import/dati.json:ro \
+  app python import_data.py
+```
+Protetto da file flag `/data/import_done`.
+
+### Variabili d'ambiente
+| Variabile | Default | Note |
+|-----------|---------|------|
+| `PORT` | `8080` | Porta interna |
+| `DB_BACKEND` | `json` | `json` \| `mysql` \| `postgres` |
+| `DATA_DIR` | `/data` | Directory JSON |
+| `DB_HOST` | `db` | Host DB |
+| `DB_PORT` | `3306`/`5432` | Porta DB |
+| `DB_NAME` | `gestione_consegne` | Nome DB |
+| `DB_USER` | — | Utente DB |
+| `DB_PASSWORD` | — | Password DB |
+| `IMPORT_SOURCE` | `/import/dati.json` | Sorgente import |
 
 ---
 
-## 4. Server Python (`server.py`)
+## 5. Server Python (`server.py`)
 
 ### Costanti
 ```python
-PORT = 8742
-DATA_FILE   = BASE_DIR + "/dati.json"
-LOCK_FILE   = BASE_DIR + "/server.lock"
-BACKUP_DIR  = BASE_DIR + "/backup"
-LOG_FILE    = BASE_DIR + "/gestionale.log"
-MAX_BACKUPS = 20
-LOG_DAYS    = 7
-WRITE_RETRIES = 2
+PORT     = int(os.environ.get("PORT", 8080))
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ```
 
-### Endpoint HTTP
+### Endpoint HTTP V1
 | Metodo | Path | Descrizione |
 |--------|------|-------------|
-| GET | `/api/ping` | Health check. Risponde `{"ok": true, "clients": N}`. Registra il client. |
-| GET | `/api/data` | Legge `dati.json` dal disco (mai da cache) e restituisce tutto il DB con `_connectedClients` aggiunto. |
-| POST | `/api/data` | Riceve il DB completo, fa backup, scrive atomicamente su disco. |
-| POST | `/api/log` | Riceve `{"msg": "..."}` dal client e lo scrive su `gestionale.log`. |
-| GET | `/*` | File statici (serve `index.html` e altri file dalla cartella). |
-
-### Scrittura atomica
-Ogni salvataggio: scrive su `dati.json.tmp` → `os.replace()` → rinomina atomicamente. Questo garantisce che il file originale non venga mai corrotto a metà scrittura.
-
-### Lettura fresca
-Prima di ogni scrittura, il server rilegge sempre `dati.json` dal disco (non usa cache in memoria). Questo previene sovrascritture in caso di accesso contemporaneo da più sessioni browser.
-
-### Retry e crash
-Ogni operazione di lettura/scrittura viene tentata `WRITE_RETRIES = 2` volte. Se entrambi i tentativi falliscono (es. NAS offline, cartella condivisa smontata), `crash_server()` viene chiamato:
-1. Scrive nel log
-2. Rimuove `server.lock`
-3. Mostra notifica tray
-4. Mostra popup bloccante PowerShell sul PC server con il motivo del crash e istruzione di riavviare `avvia.bat`
-5. `os._exit(1)` — termina immediatamente
-
-### Contatore client connessi
-Il server traccia i client tramite heartbeat (timestamp dell'ultimo ping). Un client è considerato "attivo" se ha fatto ping negli ultimi 15 secondi. Il contatore viene aggiornato ad ogni ping e incluso in ogni risposta `/api/data`.
-
-### System tray
-Usa `pystray` + `Pillow` (installati in `python_embed/Lib/site-packages/`). Icona blu con punto esclamativo bianco (64x64 RGBA, disegnata programmaticamente). Menu contestuale: "Apri gestionale" e "Ferma server". Se `pystray` non è disponibile, il server gira comunque senza icona tray (fallback silenzioso).
+| GET | `/api/ping` | Healthcheck. Risponde `{"ok": true, "clients": N}`. Registra il client. |
+| GET | `/api/data` | Legge tutto il DB via `storage.read_data()`. Aggiunge `_connectedClients`. |
+| POST | `/api/data` | Scrive tutto il DB via `storage.write_data()`. |
+| POST | `/api/log` | Riceve `{"msg": "..."}` dal client e lo scrive nel log. |
+| GET | `/*` | File statici dalla directory `BASE_DIR`. |
 
 ### Logging
-File `gestionale.log`, rotazione automatica a 7 giorni (le righe più vecchie vengono eliminate all'avvio). Ogni salvataggio, ogni connessione client, ogni errore, ogni azione dell'utente (inviata dal browser via `/api/log`) viene registrata.
+Tutto su stdout (catturato da Docker). Formato: `YYYY-MM-DD HH:MM:SS [LEVEL] messaggio`.
+
+### Contatore client connessi
+Heartbeat per IP tramite `client_heartbeat{}`. Un client è "attivo" se ha fatto ping negli ultimi 15 secondi.
+
+### Crash
+`crash_server(reason)` → logga su stdout + `os._exit(1)`. Nessun popup, nessun lock file (rimossi in fase di dockerizzazione).
+
+### Rimosso rispetto alla versione Windows
+- System tray (`pystray`, `Pillow`)
+- Popup PowerShell crash
+- `server.lock` / `write_lock()` / `remove_lock()`
+- `rotate_log()` (Docker gestisce la rotazione dei log)
+- `open_browser()`
+- File `avvia.bat`, `avvia.ps1`, `configura_firewall.bat`
 
 ---
 
-## 5. Frontend (`index.html`)
+## 6. Storage layer (`storage.py`)
 
-Single-page application in HTML/CSS/JS puro. Nessun framework, nessuna dipendenza esterna tranne Google Fonts (caricati dalla CDN, opzionali se offline).
-
-### Font
-- **DM Sans** — body, UI generale
-- **DM Mono** — date, codici, contatori
-
-### Sistema temi
-Due temi: scuro (default) e chiaro. Gestito tramite `data-theme` attribute sull'elemento `<html>`.
-
-```css
-:root, [data-theme="dark"] { /* variabili tema scuro */ }
-[data-theme="light"]       { /* variabili tema chiaro */ }
-@media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) { /* auto light */ } }
+### Interfaccia pubblica
+```python
+init_storage()       # chiamata una volta all'avvio del server
+read_data()          # → {"consegne": [], "giornate": [], "squadre": []}
+write_data(data)     # salva il dict completo
+make_backup()        # snapshot JSON (no-op per DB)
 ```
 
-La preferenza manuale viene salvata in `localStorage` con chiave `gc_theme`. Al caricamento, `initTheme()` legge `localStorage` oppure rileva la preferenza OS. Il pulsante ☀️/🌙 nell'header chiama `toggleTheme()`.
+### Backend JSON
+File separati: `consegne.json`, `giornate.json`, `squadre.json` in `DATA_DIR`.
+Scrittura atomica (`.tmp` + `os.replace()`). Backup in `DATA_DIR/backup/` (max 20 per tipo).
 
-### Variabili CSS principali (tema scuro)
-```css
---bg: #0f1117          /* sfondo pagina */
---surface: #181c27     /* header, sidebar */
---surface2: #1e2333    /* card, righe espanse */
---border: #2a2f42
---text: #e4e8f5
---muted: #6b7394
---accent: #4f8aff      /* blu primario */
---accent2: #7c5cfc     /* viola secondario */
---wait: #f59e0b        /* arancio = in attesa */
---sched: #3b82f6       /* blu = programmata */
---done: #22c55e        /* verde = completata */
---cancel: #ef4444      /* rosso = annullata */
-```
+### Backend MySQL / PostgreSQL
+Schema nativo (non blob JSON). Tabelle:
 
-### Palette colori squadre (8 colori, indipendenti dal tema)
-```css
---sq0: #4f8aff  /* blu */
---sq1: #22c55e  /* verde */
---sq2: #f59e0b  /* ambra */
---sq3: #ef4444  /* rosso */
---sq4: #a855f7  /* viola */
---sq5: #06b6d4  /* ciano */
---sq6: #f97316  /* arancio */
---sq7: #ec4899  /* rosa */
-```
+| Tabella | Descrizione |
+|---------|-------------|
+| `consegne` | Record consegna con campi reali + `articoli` (JSON/JSONB) + `extra` (JSON/JSONB) per campi futuri |
+| `squadre` | Squadre con `id`, `nome`, `color_idx` |
+| `giornate` | Giornate con `id`, `data`, `squadra` (nome stringa in V1), `extra` |
+| `giornata_consegne` | Join giornata↔consegna con `ordine` e `completata` |
 
-Ogni colore ha anche `--sqN-bg` per il background del badge. Le classi CSS `.sq-c0` ... `.sq-c7` applicano il colore corrispondente.
+Il campo `extra` (JSONB in Postgres, JSON in MySQL) cattura eventuali campi aggiuntivi del frontend senza rompere lo schema. È pienamente leggibile da chiunque acceda al DB.
 
-### Stato globale JS
+I campi camelCase del frontend (`giornoConsegna`, `fasciaOraria`, ecc.) vengono normalizzati a snake_case al salvataggio e riconvertiti alla lettura.
+
+### Retry e attesa DB
+`init_storage()` tenta la connessione al DB fino a 10 volte (3 secondi di pausa tra un tentativo e l'altro) per gestire il caso in cui il container DB non sia ancora pronto al momento dell'avvio dell'app.
+
+---
+
+## 7. Frontend
+
+Il frontend V1 è **invariato** rispetto alla versione Windows. Tutti i dettagli di implementazione restano validi.
+
+### Costante API
 ```javascript
-let db = { consegne: [], giornate: [], squadre: [] }; // tutto il database
-let currentView = 'lista';          // vista attiva: 'lista' | 'giornate' | 'impostazioni'
-let currentGiornataId = null;       // ID giornata selezionata nella sidebar
-let editingConsegnaId = null;       // ID consegna in modifica nel modal
-let saveTimer = null;               // timer debounce salvataggio (600ms)
-let isDirty = false;                // modifiche non ancora salvate
-let serverOnline = true;            // stato connessione server
-let pingFailCount = 0;              // contatore ping falliti consecutivi
-const PING_FAIL_THRESHOLD = 2;      // ping falliti prima di mostrare overlay
-let expandedRowId = null;           // ID riga espansa nella lista (preservato ai re-render)
-const SQ_COLORS = 8;                // numero colori disponibili per squadre
+// store.js
+export const API = `http://${window.location.hostname}:8080/api`;
+```
+⚠️ La porta è cambiata da `8742` (Windows) a `8080` (Docker). Già aggiornata in `store.js`.
+
+### Stato globale (`store.js`)
+```javascript
+let db              = { consegne: [], giornate: [], squadre: [] };
+let currentView     = 'lista';
+let currentGiornataId    = null;
+let editingConsegnaId    = null;
+let expandedRowId        = null;
+let isDirty              = false;
+let serverOnline         = true;
+let pingFailCount        = 0;
+const PING_FAIL_THRESHOLD = 2;
+const SQ_COLORS = 8;
 ```
 
 ### Ciclo di vita dei dati
 1. Al caricamento: `loadData()` → GET `/api/data` → popola `db` → `renderAll()`
-2. Ogni 8 secondi: se `serverOnline && !isDirty` → `loadData()` (polling)
-3. Ogni 2 secondi: `pingServer()` → GET `/api/ping` → se 2 fallimenti consecutivi → `showDisconnectOverlay()`
-4. Ogni modifica utente: `markDirty()` → dopo 600ms debounce → `saveData()` → POST `/api/data`
-5. Ogni `saveData()` aspetta conferma dal server. Se fallisce → `syncError()` (il ping rileverà eventuale disconnessione)
+2. Ogni 8 secondi: polling se `serverOnline && !isDirty`
+3. Ogni 2 secondi: ping → se 2 fallimenti → `showDisconnectOverlay()`
+4. Ogni modifica: `markDirty()` → 600ms debounce → `saveData()` → POST `/api/data`
 
-### Viste (tab)
-| ID | Tab | Descrizione |
-|----|-----|-------------|
-| `viewLista` | 📋 Lista Consegne | Tabella principale con tutte le consegne |
-| `viewGiornate` | 📅 Giornate | Vista giornata con sidebar, card drag&drop |
-| `viewImpostazioni` | ⚙️ Impostazioni | Gestione squadre |
-
-### Vista Lista
-- Tabella con colonne: (expand), Stato, Prenotazione, Cliente, Città, Squadra, Tipo consegna, Prodotto, Preferenze periodo
-- La colonna **Tipo consegna** mostra i badge deduplicati di tutti gli articoli tramite `tipiConsegnaBadges(c)`, ordinati per "peso" (incasso > installazione > consegna). Se una consegna ha articoli misti, appaiono più badge affiancati.
-- **Ordine nominativo: COGNOME Nome** (non Nome Cognome — questo è intenzionale e definitivo)
-- Ordinata per data prenotazione decrescente (più recenti in cima)
-- Filtri: ricerca per nome/cognome, stato, città
-- Click su riga → espande dettaglio con tutti i campi (inclusi quelli non visibili in tabella)
-- `expandedRowId` viene preservato ai re-render automatici (il polling non chiude la riga aperta)
-- Colori bordo sinistro per stato: arancio=in_attesa/da_confermare, blu=programmata, verde=completata, rosso=annullata/da_riprogrammare
-- Badge squadra: classe `.sq-badge .sq-cN` dove N è `colorIdx` della squadra
-
-### Vista Giornate
-- Sidebar sinistra: lista giornate ordinate per data, con dot colorato (verde=passata, blu=futura), badge con numero consegne, badge squadra colorato
-- Header giornata: data + badge squadra
-- Card consegne: drag&drop per riordinare (HTML5 Drag API), pulsante ✕ per rimuovere dalla giornata (la consegna torna "in attesa"), pulsante ✏️ per modificare
-- Le card mostrano gli articoli come pillole `.articolo-pill` nella riga sotto indirizzo/telefono
-- Pulsante "🖨️ Stampa PDF" appare nella view-bar quando una giornata è selezionata
-- Pulsante "+ Aggiungi consegna" apre modal di selezione con lista filtrata dei clienti "in attesa"
-- Pulsante "🗑 Elimina giornata" — impossibile eliminare se contiene consegne assegnate
-- Più giornate con la stessa data sono permesse (squadre diverse)
-
-### Vista Impostazioni
-- Lista squadre con nome editabile (blur/Enter per salvare), dot colore, selettore colore (8 pallini), pulsante elimina
-- Campo input + pulsante per aggiungere nuova squadra
-- Rinominare una squadra aggiorna automaticamente tutte le giornate che la usano
-
-### Stampa PDF
-Funzione `stampaPDF()`:
-- Apre una nuova finestra del browser con HTML generato al volo
-- Layout A4, font Arial, nessuna dipendenza esterna
-- Intestazione: "Giornata del GG/MM/AAAA — Nome Squadra" + conteggio consegne
-- Una `.cons-block` per ogni consegna con: numero progressivo, Cognome Nome, tipo consegna, griglia di tutti i campi, checkbox "Consegnato / Non consegnato" in fondo
-- Gli articoli multipli vengono elencati separatamente (Art. 1, Art. 2, …) con Tipo, Codice, Descrizione ciascuno
-- `setTimeout(() => win.print(), 600)` — apre il dialogo di stampa automaticamente
-
-### Modal consegna
-Campi del form (tutti in `f_[nome]`):
-- `f_dataPrenotazione` (date), `f_stato` (select), `f_nome`, `f_cognome`, `f_citta`, `f_indirizzo`
-- `f_tel1`, `f_tel2`, `f_raee` (select: si/no)
-- `f_piano`, `f_noteAbitazione` (textarea, max 170 caratteri), `f_preferenzePeriodo` (textarea, max 90 caratteri)
-- `f_giornataAssegnata_display` (sola lettura), `f_fasciaOraria` (text), `f_note` (textarea, max 170 caratteri)
-- **Sezione articoli** (`#articoliList`): lista dinamica di righe `.articolo-row`, ognuna con 5 colonne:
-  - `data-art="tipoConsegna"` (select: consegna / installazione / ins_incasso / ins_muro / ins_sbs — il valore "incasso" non appare nei nuovi select, solo se già presente nel record)
-  - `data-art="tipo"` (input text — tipologia prodotto)
-  - `data-art="codice"` (input text — SKU/codice)
-  - `data-art="desc"` (input text — descrizione estesa)
-  - pulsante ✕ per rimuovere la riga
-
-> ⚠️ `f_tipoConsegna` **non esiste più nel DOM**. Il tipo di consegna è per-articolo, non per-consegna. Anche `f_tipoProdotto`, `f_codiceProdotto`, `f_descrizioneProdotto` non esistono più.
-
-I tre textarea hanno contatori caratteri in tempo reale: gialli all'85% del limite, rossi al limite.
-
-### Schermata bloccante disconnessione
-`#disconnectOverlay` — `position: fixed; inset: 0; z-index: 99999`. Appare dopo 2 ping falliti consecutivi. Non può essere chiusa dall'utente. Messaggio: "Connessione al server persa — Il server non è raggiungibile — I dati salvati sono al sicuro. Attendi che il server venga riavviato oppure contatta il responsabile." Non contiene istruzioni su `avvia.bat` perché i client non usano il bat.
+### Grafo dipendenze JS
+```
+main.js
+  ├── store.js          (no deps)
+  ├── api.js → store
+  ├── sync.js → api, store
+  ├── utils.js → store
+  ├── theme.js          (no deps)
+  ├── render.js → sync, utils, store, dragdrop
+  │     └── dragdrop.js → store, sync, api
+  ├── giornate.js → store, sync, api, render, utils
+  ├── modal-consegna.js → store, sync, api, render, utils
+  ├── modal-select.js → store, sync, api, render, utils
+  ├── squadre.js → store, sync, api, render, utils
+  └── stampa.js → store, utils
+```
 
 ---
 
-## 6. Struttura dati (`dati.json`)
+## 8. Struttura dati
 
+### `consegne` (array)
 ```json
 {
-  "consegne": [
-    {
-      "id": "abc123",
-      "dataPrenotazione": "2024-03-22",
-      "stato": "in_attesa",
-      "nome": "Mario",
-      "cognome": "Rossi",
-      "citta": "Vicenza",
-      "indirizzo": "Via Roma 1",
-      "tel1": "+39 333 1234567",
-      "tel2": "",
-      "tipoConsegna": "consegna",
-      "raee": "no",
-      "articoli": [
-        { "tipoConsegna": "incasso", "tipo": "TV", "codice": "SONY-X90L", "desc": "TV Sony 55\" OLED" },
-        { "tipoConsegna": "installazione", "tipo": "Lavatrice", "codice": "LG-WM001", "desc": "Lavatrice LG 7kg bianca" }
-      ],
-      "piano": "2",
-      "noteAbitazione": "Scala stretta, no ascensore",
-      "preferenzePeriodo": "Solo mattina",
-      "giornoConsegna": "2024-03-25",
-      "fasciaOraria": "9:00-12:00",
-      "note": ""
-    }
+  "id": "abc123",
+  "dataPrenotazione": "2024-03-22",
+  "stato": "in_attesa",
+  "nome": "Mario",
+  "cognome": "Rossi",
+  "citta": "Vicenza",
+  "indirizzo": "Via Roma 1",
+  "tel1": "+39 333 1234567",
+  "tel2": "",
+  "raee": "no",
+  "articoli": [
+    { "tipoConsegna": "ins_incasso", "tipo": "TV", "codice": "SONY-X90L", "desc": "TV Sony 55\" OLED" }
   ],
-  "giornate": [
-    {
-      "id": "def456",
-      "data": "2024-03-25",
-      "squadra": "Squadra A",
-      "consegneIds": ["abc123", "ghi789"]
-    }
-  ],
-  "squadre": [
-    {
-      "id": "sq001",
-      "nome": "Squadra A",
-      "colorIdx": 0
-    }
-  ]
+  "piano": "2",
+  "noteAbitazione": "Scala stretta",
+  "preferenzePeriodo": "Solo mattina",
+  "giornoConsegna": "2024-03-25",
+  "fasciaOraria": "9:00-12:00",
+  "note": ""
 }
 ```
 
-### Campo `articoli` (sostituisce i vecchi campi singoli)
-Ogni elemento dell'array ha la struttura:
+### `giornate` (array)
 ```json
-{ "tipoConsegna": "consegna|installazione|ins_incasso|ins_muro|ins_sbs", "tipo": "string", "codice": "string", "desc": "string" }
+{
+  "id": "def456",
+  "data": "2024-03-25",
+  "squadra": "Squadra A",
+  "consegneIds": ["abc123"]
+}
 ```
-Tutti i campi sono opzionali (stringa vuota se non compilati). `tipoConsegna` default a `"consegna"` se assente. Un record può avere zero o più articoli.
+⚠️ In V1 `squadra` è una **stringa (nome)**. In V2 diventerà `squadra_id` (FK). Vedere sezione 11.
 
-> ⚠️ Il valore `"incasso"` (ex "Incasso - Muro - SBS") è **deprecato** e non più selezionabile dall'utente, ma è mantenuto per retrocompatibilità: i record esistenti con `"incasso"` vengono visualizzati correttamente ovunque (lista, dettaglio, stampa PDF, modal di modifica). Nel modal di modifica, se un articolo ha `tipoConsegna = "incasso"`, l'opzione appare nel select solo per quel record con etichetta "legacy".
-
-> ⚠️ `tipoConsegna` **non esiste più come campo di primo livello** della consegna. È esclusivamente un attributo per-articolo. Questo permette consegne miste (es. TV a incasso + lavatrice con installazione semplice allo stesso cliente).
-
-### Retrocompatibilità campi vecchi (`tipoProdotto`, `codiceProdotto`, `descrizioneProdotto`, `tipoConsegna`)
-I record scritti con versioni precedenti possono avere i tre campi singoli e/o `tipoConsegna` a livello di consegna invece di `articoli`. Il frontend li legge e li visualizza correttamente ovunque tramite questa logica:
-```javascript
-const arts = c.articoli && c.articoli.length > 0 ? c.articoli
-  : (c.tipoProdotto ? [{ tipoConsegna: c.tipoConsegna, tipo: c.tipoProdotto, codice: c.codiceProdotto, desc: c.descrizioneProdotto }] : []);
+### `squadre` (array)
+```json
+{ "id": "sq001", "nome": "Squadra A", "colorIdx": 0 }
 ```
-Al primo salvataggio di una consegna migrata, i campi vecchi vengono rimossi e sostituiti da `articoli[]` con `tipoConsegna` dentro ogni articolo. Non è necessaria una migrazione batch.
 
 ### Valori enum
-- `stato`: `"in_attesa"` | `"da_confermare"` | `"programmata"` | `"completata"` | `"annullata"` | `"da_riprogrammare"`
-- `tipoConsegna`: `"consegna"` | `"installazione"` | `"ins_incasso"` | `"ins_muro"` | `"ins_sbs"` | ~~`"incasso"`~~ *(deprecato — solo retrocompatibilità, non più selezionabile)*
-- `raee`: `"si"` | `"no"`
-- `colorIdx`: `0`..`7` (indice nella palette `--sqN`)
-
-### Logica stati automatica
-Al caricamento (`autoCompleteStati()`):
-1. Se una consegna ha `stato === "programmata"` e `giornoConsegna` è nel passato → `stato` viene aggiornato a `"completata"` automaticamente e salvato.
-2. Se una consegna ha `stato === "attesa"` → `stato` viene aggiornato a `"in_attesa"` per retrocompatibilità.
+- `stato`: `in_attesa` | `da_confermare` | `programmata` | `completata` | `annullata` | `da_riprogrammare`
+- `tipoConsegna` (per articolo): `consegna` | `installazione` | `ins_incasso` | `ins_muro` | `ins_sbs` | ~~`incasso`~~ *(deprecato — solo retrocompatibilità)*
+- `raee`: `si` | `no`
+- `colorIdx`: `0`..`7`
 
 ### Campo `_connectedClients`
-Aggiunto dal server solo nelle risposte HTTP, **mai scritto su disco**. Il client lo legge per aggiornare il contatore nell'header.
+Aggiunto dal server nelle risposte HTTP. **Mai scritto su disco o nel DB.**
 
 ---
 
-## 7. Flusso operativo tipico
+## 9. Flusso operativo tipico
 
 ### Aggiungere una consegna
-1. Vista Lista → "Nuova consegna" → compila form → aggiungi uno o più articoli con "＋ Aggiungi articolo" → Salva
-2. La consegna appare in lista con stato "In attesa"
+Lista → "Nuova consegna" → compila form → aggiungi articoli → Salva
 
 ### Programmare una consegna
-1. Vista Giornate → seleziona o crea una giornata → "Aggiungi consegna"
-2. La modal mostra solo le consegne con stato "attesa" o "in_attesa"
-3. Seleziona → Aggiungi → la consegna diventa "programmata", `giornoConsegna` viene impostato alla data della giornata
+Giornate → seleziona o crea giornata → "Aggiungi consegna" → seleziona dalla lista "in attesa" → Aggiungi
 
 ### Rimuovere da una giornata
-Click ✕ sulla card → la consegna torna "attesa", `giornoConsegna` e `fasciaOraria` vengono svuotati
-
-### Riprogrammare una consegna fallita
-La consegna è "completata" (giorno passato). Aprire il modal di modifica → cambiare stato a "attesa" manualmente → salvare → la consegna torna disponibile per essere assegnata a una nuova giornata.
+Click ✕ sulla card → la consegna torna "in_attesa", `giornoConsegna` e `fasciaOraria` svuotati
 
 ---
 
-## 8. Launcher (`avvia.bat` + `avvia.ps1`)
+## 10. Decisioni progettuali già prese
 
-`avvia.bat` contiene solo:
-```bat
-@echo off
-PowerShell -NoProfile -ExecutionPolicy Bypass -File "%~dp0avvia.ps1"
-```
-
-`avvia.ps1` gestisce tutto:
-1. Cerca `server.lock` nella cartella dello script
-2. Se trovato e server risponde → apre browser sull'IP del server esistente → exit
-3. Se non trovato (o lock stale) → cerca Python (ordine: `python_embed/`, PATH, MS Store, installazioni standard) → avvia `server.py` nascosto → attende max 10s → apre browser su localhost
-
-**Non chiede mai UAC** (il codice UAC/firewall è stato rimosso intenzionalmente).
-
----
-
-## 9. Configurazione firewall (`configura_firewall.bat`)
-
-Da eseguire **una sola volta sul PC server**. Richiede UAC. Aggiunge una regola in ingresso per TCP porta 8742. Può essere eliminato dopo l'uso.
-
----
-
-## 10. Python embedded
-
-Cartella `python_embed/` contiene Python 3.13 embeddable (Windows 64-bit).
-- `python313._pth` modificato: riga `import site` decommentata (necessario per pip e librerie)
-- Librerie installate: `pystray`, `Pillow` (in `Lib/site-packages/`)
-- `pip` installato tramite `get-pip.py` (il file può essere eliminato dopo l'uso)
-
----
-
-## 11. Decisioni progettuali già prese (non riaprire)
-
+### Architettura generale
 | Decisione | Motivazione |
 |-----------|-------------|
-| Server unico con `server.lock` | Multi-server su SMB causa corruzione dati |
-| JSON come database | Leggibile, portabile, backup semplici. SQLite su SMB è inaffidabile |
+| Docker come target esclusivo | Eliminata dipendenza da Windows, deployment riproducibile |
+| Porta `8080` interna | Standard HTTP alternativo; mappabile a qualsiasi porta sull'host |
+| Immagine `python:3.13-slim-bookworm` | glibc (necessario per psycopg2-binary), superficie minimale, LTS |
+| Unica immagine per tutti i backend | Semplicità deploy; dipendenze DB importate condizionalmente |
+| Utente non-root `appuser:1001` | Best practice sicurezza container |
+| `read_only: true` nel compose | Filesystem container in sola lettura; solo `/data` e `/tmp` scrivibili |
+| DB non esposto sull'host | Sicurezza: raggiungibile solo dalla rete interna Docker |
+| File separati per JSON (non unico `dati.json`) | Scritture atomiche indipendenti per entità, preparazione V2 |
+| Schema DB nativo (non blob) | Leggibilità diretta nel DB, query possibili, preparazione V2 |
+| Campo `extra` JSONB/JSON | Absorbe campi futuri senza migration dello schema |
+| `squadra` come stringa in V1 | Retrocompatibilità; diventerà `squadra_id` in V2 |
+| Healthcheck Python puro | Nessuna dipendenza da curl/wget nell'immagine |
+
+### Frontend e dati
+| Decisione | Motivazione |
+|-----------|-------------|
 | Scrittura atomica (tmp + rename) | Protezione da corruzione a metà scrittura |
 | Lettura fresca prima di ogni scrittura | Previene sovrascritture con accesso quasi-contemporaneo |
 | 2 tentativi poi crash | Preferibile perdere l'ultima modifica che avere dati corrotti |
-| Ping HTTP (non ICMP) | ICMP bloccato dal firewall Windows di default |
-| Python embedded nella cartella | Nessuna installazione sui PC, portabilità totale |
-| `avvia.bat` → `avvia.ps1` | PowerShell vede correttamente le variabili utente (PATH MS Store) |
-| No UAC in `avvia.ps1` | UAC gestito una tantum da `configura_firewall.bat` |
-| Cognome Nome (non Nome Cognome) | Richiesta esplicita del cliente, non modificare |
-| Stessa data permessa con squadre diverse | Richiesta esplicita per gestire più squadre parallele |
-| Schermata bloccante senza istruzioni bat | I client non usano il bat, solo il browser diretto |
-| Tema auto da OS + switch manuale | Usabilità su monitor diversi, salvato in localStorage |
-| `articoli[]` invece di 3 campi singoli | Supporto a più prodotti per consegna — retrocompatibile coi record vecchi |
-| `tipoConsegna` per-articolo (non per-consegna) | Consegne miste: prodotti diversi possono avere tipo installazione diverso |
+| Ping HTTP (non ICMP) | ICMP bloccato dai firewall di default |
+| Cognome Nome (non Nome Cognome) | Richiesta esplicita del cliente — **non invertire mai** |
+| Stessa data permessa con squadre diverse | Richiesta esplicita per gestire squadre parallele |
+| Schermata bloccante senza istruzioni specifiche | I client usano solo il browser |
+| Tema auto da OS + switch manuale | Usabilità su monitor diversi, salvato in `localStorage` |
+| `articoli[]` invece di 3 campi singoli | Più prodotti per consegna, retrocompatibile |
+| `tipoConsegna` per-articolo | Consegne miste con tipi installazione diversi per articolo |
 
 ---
 
-## 12. Funzionalità implementate
+## 11. Piano upgrade V2
 
-- **Esportazione PDF** della giornata (`stampaPDF()`) ✅
-- **Articoli multipli per consegna** (`articoli[]`) ✅
-- **Esportazione CSV/Excel** — non richiesta
+Questa sezione documenta il piano completo per il prossimo upgrade. **Non implementare nulla di questa sezione senza esplicita autorizzazione.**
+
+### Panoramica V2
+La V2 introduce autenticazione, permessi granulari, multi-tenancy (negozi), API REST complete e polling efficiente basato su timestamp.
+
+### 11.1 Modifiche `server.py`
+
+Aggiungere (senza riscrivere la struttura esistente):
+- Strutture in memoria: `sessions = {}`, `challenges = {}`, `category_timestamps = {}`
+- Thread daemon per cleanup sessioni/challenges scaduti (ogni 60s)
+- Metodo `_check_auth(required_permission)` nell'Handler
+- Tutti i nuovi endpoint REST (vedere tabella sotto)
+- Rimozione di `POST /api/data` e `GET /api/data` come endpoint unici
+- Rimozione di `POST /api/log`
+- `GET /api/ping` resta invariato (nessuna auth, usato dall'healthcheck)
+
+**Endpoint V2 completi:**
+
+| Metodo | Path | Permesso | Descrizione |
+|--------|------|----------|-------------|
+| GET | `/api/auth/challenge` | No auth | Genera challenge monouso |
+| POST | `/api/auth/login` | No auth | Login → token + permessi |
+| POST | `/api/auth/logout` | Token | Invalida sessione |
+| POST | `/api/auth/change-password` | Token | Cambia propria password |
+| GET | `/api/ping` | No auth | Healthcheck (invariato) |
+| GET | `/api/stato` | Token (no superadmin) | Timestamp per polling |
+| GET/POST | `/api/negozi` | superadmin | Lista/Crea negozi |
+| PUT/DELETE | `/api/negozi/:id` | superadmin | Modifica/Elimina negozio |
+| GET/POST | `/api/tipi-account` | `tipi_account.leggi` / superadmin | Lista/Crea tipi account |
+| PUT/DELETE | `/api/tipi-account/:id` | superadmin | Modifica/Elimina tipo account |
+| GET/POST | `/api/utenti` | `utenti.leggi` / `utenti.crea` | Lista/Crea utenti |
+| PUT | `/api/utenti/:id/password` | `utenti.modifica` | Cambia password utente |
+| PUT | `/api/utenti/:id/tipo` | `utenti.modifica` | Cambia tipo account utente |
+| DELETE | `/api/utenti/:id` | `utenti.elimina` | Elimina utente |
+| GET/POST | `/api/consegne` | `consegne.leggi` / `consegne.scrivi` | Lista/Crea |
+| PUT/DELETE | `/api/consegne/:id` | `consegne.scrivi` / `consegne.elimina` | Modifica/Elimina |
+| GET/POST | `/api/giornate` | `giornate.leggi` / `giornate.crea` | Lista/Crea |
+| DELETE | `/api/giornate/:id` | `giornate.elimina` | Elimina |
+| POST | `/api/giornate/:id/assegna` | `giornate.assegna` | Aggiunge consegne |
+| DELETE | `/api/giornate/:id/assegna/:cid` | `giornate.assegna` | Rimuove consegna |
+| PUT | `/api/giornate/:id/riordina` | `giornate.riordina` | Riordina consegne |
+| PUT | `/api/giornate/:id/consegne/:cid/completa` | `giornate.segna_completata` | Segna completata |
+| GET/POST | `/api/squadre` | `squadre.leggi` / `squadre.gestisci` | Lista/Crea |
+| PUT/DELETE | `/api/squadre/:id` | `squadre.gestisci` | Modifica/Elimina |
+
+### 11.2 Modifiche `storage.py`
+
+Schema DB ampliato per V2. Le tabelle V1 (`consegne`, `squadre`, `giornate`, `giornata_consegne`) vengono estese, non sostituite:
+
+```sql
+-- NUOVE tabelle
+CREATE TABLE negozi (
+    id        VARCHAR(36) PRIMARY KEY,
+    nome      VARCHAR(255) NOT NULL,
+    creato_il TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE tipi_account (
+    id        VARCHAR(36) PRIMARY KEY,
+    nome      VARCHAR(255) NOT NULL UNIQUE,
+    permessi  TEXT NOT NULL,   -- JSON array: '["consegne.leggi","stampa.pdf"]'
+    creato_il TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE utenti (
+    id               VARCHAR(36) PRIMARY KEY,
+    username         VARCHAR(150) NOT NULL UNIQUE,
+    password_hash    VARCHAR(64) NOT NULL,   -- sha256(sha256(password))
+    tipo_account_id  VARCHAR(36) REFERENCES tipi_account(id) ON DELETE SET NULL,
+    negozio_id       VARCHAR(36) REFERENCES negozi(id) ON DELETE SET NULL,
+    is_superadmin    BOOLEAN NOT NULL DEFAULT FALSE,
+    primo_login      BOOLEAN NOT NULL DEFAULT TRUE,
+    creato_da        VARCHAR(36),
+    creato_il        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    ultimo_accesso   TIMESTAMP
+);
+
+-- MODIFICHE alle tabelle esistenti
+ALTER TABLE consegne ADD COLUMN negozio_id VARCHAR(36) REFERENCES negozi(id);
+ALTER TABLE consegne ADD COLUMN versione INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE squadre  ADD COLUMN negozio_id VARCHAR(36) REFERENCES negozi(id);
+ALTER TABLE squadre  ADD COLUMN versione INTEGER NOT NULL DEFAULT 1;
+-- squadre.squadra_id (FK) sostituisce squadre.squadra (stringa) in giornate
+ALTER TABLE giornate ADD COLUMN negozio_id VARCHAR(36) REFERENCES negozi(id);
+ALTER TABLE giornate ADD COLUMN squadra_id VARCHAR(36) REFERENCES squadre(id);
+ALTER TABLE giornate ADD COLUMN versione INTEGER NOT NULL DEFAULT 1;
+-- giornate.squadra (stringa) va rimossa dopo migrazione
+```
+
+⚠️ Per il backend JSON in V2, `squadra_id` (non il nome stringa) viene usato nelle giornate, coerentemente con lo schema DB.
+
+### 11.3 Nuovo `migrate.py`
+
+Script one-shot per la migrazione V1 → V2. Deve:
+1. Verificare il file flag `migrazione_v2.done` (o tabella `migrazioni` per DB) — bloccarsi se già eseguito
+2. Fare backup completo di tutti i file/tabelle
+3. Creare negozio "Negozio principale"
+4. Aggiungere `negozio_id` e `versione: 1` a tutte le entità
+5. Convertire `giornate.squadra` (stringa) → `giornate.squadra_id` (FK)
+6. Creare superadmin con password di default `admin` (hash pre-calcolato)
+7. Creare `tipi_account` vuoto
+8. Aggiornare `utenti` (se esistono): rimuovere `ruolo`, aggiungere `tipo_account_id: null` e `negozio_id`
+9. Scrivere il file flag
+
+### 11.4 File frontend nuovi
+
+| File | Contenuto |
+|------|-----------|
+| `js/sha256.js` | SHA-256 puro JS (no `crypto.subtle` — non disponibile su HTTP su IP LAN) |
+| `js/auth.js` | Login overlay, challenge-response, sessionStorage, logout, cambio password |
+| `js/permessi.js` | Lista permessi, dipendenze tra permessi, `hasPermesso(id)` |
+| `js/admin-superadmin.js` | Pannello superadmin (caricato dinamicamente solo per superadmin) |
+| `js/admin-utenti.js` | Pannello gestione utenti (per account con permessi `utenti.*`) |
+
+### 11.5 File frontend modificati
+
+| File | Tipo modifica |
+|------|---------------|
+| `js/store.js` | Aggiunta `currentUser`, `localTimestamps`; rimozione `isDirty`, `pingFailCount`; soglia ping → 1 |
+| `js/api.js` | Riscrittura: layer HTTP con header `X-Session-Token` e intercettazione 401 |
+| `js/sync.js` | Riscrittura: polling basato su timestamp, `applyServerResponse`, rimozione `markDirty`/`saveData` |
+| `js/main.js` | Modifica: init condizionale (verifica token → superadmin vs utente normale) |
+| `js/squadre.js` | Chirurgica: operazioni → REST, rimozione `remoteLog` e `markDirty` |
+| `js/giornate.js` | Chirurgica: idem |
+| `js/render.js` | Modifica: `hasPermesso()` per mostrare/nascondere UI, `squadra_id` invece di nome |
+| `js/modal-consegna.js` | Chirurgica: operazioni → REST |
+| `js/modal-select.js` | Chirurgica: operazioni → REST |
+| `index.html` | Aggiunta overlay login, overlay cambio password obbligatorio, sezione pannello utenti |
+
+### 11.6 Autenticazione V2 — dettagli
+
+**Challenge-Response con SHA-256:**
+1. `GET /api/auth/challenge` → server genera token casuale (TTL 60s), lo restituisce
+2. Client calcola: `h1 = sha256(password)`, poi `response = sha256(h1 + challenge)`
+3. `POST /api/auth/login` con `{username, challenge, response}`
+4. Server confronta con `sha256(h1_memorizzato + challenge)` a tempo costante
+5. Challenge invalidato dopo l'uso (protezione replay)
+
+**Sessioni (solo in memoria):**
+```
+{ user_id, username, negozio_id, permessi[], is_superadmin, last_seen, expires, must_change_password }
+```
+- TTL: 2 ore dall'ultimo accesso
+- Invalida immediatamente le sessioni se cambia `tipo_account_id` dell'utente
+
+**Token lato client:** salvato in `sessionStorage` (cancellato alla chiusura del browser). Header: `X-Session-Token`.
+
+### 11.7 Permessi V2
+
+| Gruppo | Permessi |
+|--------|----------|
+| Consegne | `consegne.leggi`, `consegne.scrivi`, `consegne.elimina` |
+| Giornate | `giornate.leggi`, `giornate.crea`, `giornate.elimina`, `giornate.assegna`, `giornate.riordina`, `giornate.segna_completata` |
+| Squadre | `squadre.leggi`, `squadre.gestisci` |
+| Stampa | `stampa.pdf` |
+| Tipi account | `tipi_account.leggi` |
+| Utenti | `utenti.leggi`, `utenti.crea`, `utenti.modifica`, `utenti.elimina` |
+
+Riservati al superadmin (non assegnabili): `tipi_account.gestisci`, `negozi.gestisci`.
+
+**Verifica backend nell'ordine:**
+1. Token valido → altrimenti 401
+2. Se `is_superadmin`: accesso garantito solo agli endpoint admin, 403 su endpoint operativi
+3. Permesso specifico presente in `session.permessi` → altrimenti 403
+4. `negozio_id` della risorsa coincide con `session.negozio_id` → altrimenti 403
+
+### 11.8 Regole rigide V2 (server-side, non aggirabili)
+
+- Il superadmin non è eliminabile né modificabile da altri
+- Un utente con `tipo_account_id: null` non può fare login (escluso superadmin)
+- Un tipo account non è eliminabile se ha utenti associati
+- Un negozio non è eliminabile se ha utenti associati
+- Il cambio `tipo_account_id` invalida immediatamente tutte le sessioni attive dell'utente
+- Il superadmin riceve 403 su tutti gli endpoint operativi
+- Il server filtra sempre per `negozio_id` su tutti gli endpoint operativi
+- Un utente non può eliminare se stesso
+
+### 11.9 Ordine consigliato di implementazione V2
+
+1. `migrate.py` — eseguire subito per struttura dati corretta
+2. Backend: nuovi file dati e I/O (negozi, tipi_account, utenti aggiornato)
+3. Backend: SHA-256 e sistema Challenge-Response (`/api/auth/*`)
+4. Backend: sessioni e verifica token (middleware riusabile)
+5. Backend: timestamp e `/api/stato`
+6. Backend: endpoint REST operativi (consegne, giornate, squadre) con permessi e filtro negozio
+7. Backend: endpoint admin (negozi, tipi account, utenti)
+8. Frontend: `js/sha256.js`
+9. Frontend: `js/auth.js` (login, logout, cambio password, sessionStorage)
+10. Frontend: layer HTTP (`js/api.js`) — header auth, intercettazione 401
+11. Frontend: `js/store.js` — aggiungi `currentUser`, `localTimestamps`; rimuovi `isDirty`
+12. Frontend: `js/sync.js` — polling timestamp, `applyServerResponse`
+13. Frontend: `js/permessi.js` — `hasPermesso()`
+14. Frontend: `js/main.js` — init condizionale
+15. Frontend: `js/admin-superadmin.js` (caricato dinamicamente)
+16. Frontend: `js/admin-utenti.js`
+17. Test integrato: migrazione → primo login superadmin → creazione negozio → tipo account → utente → login → operatività
 
 ---
 
-## 13. Note per modifiche future
+## 12. Commit message convention
 
-- **Non usare `innerHTML` con dati utente non sanitizzati** — attualmente i dati vengono inseriti direttamente. Se si aggiunge autenticazione o dati da fonti esterne, aggiungere sanitizzazione XSS. La funzione `escHtml()` è già disponibile per l'escaping nei template dinamici (usata nelle righe articoli).
-- **Non aggiungere dipendenze NPM/pip** senza aggiornare anche `python_embed/` — i PC non hanno accesso a internet durante l'uso (o comunque non si deve assumere che ce l'abbiano).
-- **Non cambiare la struttura di `dati.json`** senza garantire retrocompatibilità — i file esistenti devono continuare a funzionare. Usare valori di default con `|| []` / `|| ''` per i nuovi campi.
-- **La porta 8742 non deve cambiare** — è configurata nel firewall di ogni PC server.
-- **Il file `server.lock`** non deve mai rimanere orfano — `crash_server()` e il blocco `finally` in `main` lo rimuovono sempre. In caso di kill forzato del processo, il lock stale viene rilevato e rimosso al prossimo avvio da `avvia.ps1`.
-- **`expandedRowId`** viene resettato a `null` se la riga viene eliminata — gestirlo in `deleteCurrentConsegna()` se necessario.
-- L'ordine **Cognome Nome** è intenzionale e definitivo. Non invertire.
-- **Non ripristinare `f_tipoProdotto` / `f_codiceProdotto` / `f_descrizioneProdotto` / `f_tipoConsegna`** come campi singoli nel DOM — questi campi non esistono più. Tutta la logica prodotti e tipo consegna passa da `#articoliList` e dal campo `articoli[]` nel DB.
-- **`tipiConsegnaBadges(c)`** è la funzione per mostrare i badge tipo-consegna nella lista (deduplicati). **`articoliLabel(c)`** è per testo breve (colonna prodotto). Per il dettaglio completo, iterare `c.articoli` direttamente.
+```
+tipo(ambito): descrizione breve in italiano (max 72 caratteri)
+
+- dettaglio 1
+- dettaglio 2
+```
+
+Tipi: `feat`, `fix`, `refactor`, `docs`, `style`, `chore`.
+
+Esempi:
+```
+feat(docker): aggiungi Dockerfile e compose.yaml con profili DB
+
+chore(server): rimuovi dipendenze Windows (tray, lock, browser)
+
+docs(agents): aggiorna architettura e piano V2
+```

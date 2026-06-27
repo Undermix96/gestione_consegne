@@ -1,0 +1,109 @@
+# compose.yaml — Gestione Consegne
+#
+# Profili disponibili:
+#   (nessun profilo)  DB_BACKEND=json   — dati in file JSON su volume
+#   --profile mysql   DB_BACKEND=mysql  — dati in MySQL 8.4
+#   --profile postgres DB_BACKEND=postgres — dati in PostgreSQL 16
+#
+# Configurazione tramite file .env nella stessa directory:
+#
+#   APP_PORT=8080          porta esposta sull'host (default: 8080)
+#   DB_BACKEND=json        backend dati: json | mysql | postgres
+#   DB_NAME=gestione_consegne
+#   DB_USER=gcuser
+#   DB_PASSWORD=cambiami   (obbligatorio se DB_BACKEND != json)
+#
+# Avvio esempi:
+#   JSON:      docker compose up -d
+#   MySQL:     docker compose --profile mysql up -d
+#   Postgres:  docker compose --profile postgres up -d
+#
+# Importazione dati originali (una sola volta):
+#   docker compose run --rm -v ./dati.json:/import/dati.json:ro app python import_data.py
+
+name: gestione-consegne
+
+services:
+
+  app:
+    image: undermix/gestione-consegne:latest
+    ports:
+      - "${APP_PORT:-8080}:8080"
+    environment:
+      DB_BACKEND:  "${DB_BACKEND:-json}"
+      DATA_DIR:    /data
+      DB_HOST:     db
+      DB_PORT:     "${DB_PORT:-3306}"
+      DB_NAME:     "${DB_NAME:-gestione_consegne}"
+      DB_USER:     "${DB_USER:-gcuser}"
+      DB_PASSWORD: "${DB_PASSWORD:-}"
+    volumes:
+      - app_data:/data
+    depends_on:
+      db_mysql:
+        condition: service_healthy
+        required: false
+      db_postgres:
+        condition: service_healthy
+        required: false
+    restart: unless-stopped
+    # Sicurezza: filesystem di sistema in sola lettura;
+    # solo /data e /tmp sono scrivibili (tramite tmpfs o volume).
+    read_only: true
+    tmpfs:
+      - /tmp
+
+  # ── MySQL 8.4 ────────────────────────────────────────────────────────────
+  db_mysql:
+    profiles: ["mysql"]
+    image: mysql:8.4
+    environment:
+      MYSQL_DATABASE:            "${DB_NAME:-gestione_consegne}"
+      MYSQL_USER:                "${DB_USER:-gcuser}"
+      MYSQL_PASSWORD:            "${DB_PASSWORD:?Imposta DB_PASSWORD nel file .env}"
+      MYSQL_RANDOM_ROOT_PASSWORD: "yes"
+    volumes:
+      - db_data:/var/lib/mysql
+    # Nessuna porta esposta sull'host: il DB è raggiungibile solo dall'app
+    # tramite la rete interna Docker.
+    expose:
+      - "3306"
+    healthcheck:
+      test:
+        - CMD
+        - mysqladmin
+        - ping
+        - --host=localhost
+        - --user=${DB_USER:-gcuser}
+        - --password=${DB_PASSWORD:-}
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+  # ── PostgreSQL 16 ─────────────────────────────────────────────────────────
+  db_postgres:
+    profiles: ["postgres"]
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB:       "${DB_NAME:-gestione_consegne}"
+      POSTGRES_USER:     "${DB_USER:-gcuser}"
+      POSTGRES_PASSWORD: "${DB_PASSWORD:?Imposta DB_PASSWORD nel file .env}"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    expose:
+      - "5432"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U ${DB_USER:-gcuser} -d ${DB_NAME:-gestione_consegne}
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+volumes:
+  app_data:   # dati JSON o punto di mount per import
+  db_data:    # dati MySQL o PostgreSQL
