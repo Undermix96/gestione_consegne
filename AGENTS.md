@@ -148,16 +148,26 @@ Implementato in Python puro (stdlib `urllib.request`) — nessuna dipendenza da 
 
 ### Importazione dati legacy
 ```bash
+# Backend JSON: import poi avvio
 docker compose run --rm \
   -v ./dati.json:/import/dati.json:ro \
   app python import_data.py
+docker compose up -d
+
+# Backend MySQL/Postgres: import avvia automaticamente anche il DB
+# (depends_on), poi si avvia l'app
+docker compose --profile mysql run --rm \
+  -v ./dati.json:/import/dati.json:ro \
+  app python import_data.py
+docker compose --profile mysql up -d
 ```
-Protetto da file flag `/data/import_done`.
+Protetto da file flag `/data/import_done`. Per i backend DB il container DB deve essere pronto (`service_healthy`) prima della scrittura: `docker compose run` avvia le dipendenze automaticamente grazie a `depends_on`.
 
 ### Variabili d'ambiente
 | Variabile | Default | Note |
 |-----------|---------|------|
 | `PORT` | `8080` | Porta interna |
+| `LOG_LEVEL` | `INFO` | `DEBUG` mostra anche ogni richiesta HTTP (`log_message`) |
 | `DB_BACKEND` | `json` | `json` \| `mysql` \| `postgres` |
 | `DATA_DIR` | `/data` | Directory JSON |
 | `DB_HOST` | `db` | Host DB |
@@ -187,10 +197,14 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 | GET | `/*` | File statici dalla directory `BASE_DIR`. |
 
 ### Logging
-Tutto su stdout (catturato da Docker). Formato: `YYYY-MM-DD HH:MM:SS [LEVEL] messaggio`.
+Tutto su stdout (catturato da Docker). Formato: `YYYY-MM-DD HH:MM:SS [LEVEL] messaggio`. Livello configurabile via `LOG_LEVEL` (default `INFO`). `log_message`/`log_error` di `BaseHTTPRequestHandler` sono agganciati al logger: le richieste HTTP finiscono a livello `DEBUG` (visibili solo con `LOG_LEVEL=DEBUG`), gli errori HTTP a livello `ERROR`.
 
 ### Contatore client connessi
-Heartbeat per IP tramite `client_heartbeat{}`. Un client è "attivo" se ha fatto ping negli ultimi 15 secondi.
+Heartbeat tramite `client_heartbeat{}`, chiave = header `X-Client-ID` (UUID-like generato dal browser con `crypto.getRandomValues()`, salvato in `sessionStorage`), con fallback sull'IP se l'header manca (retrocompatibilità, es. richieste esterne senza frontend). Un client è "attivo" se ha fatto una richiesta (ping o data) negli ultimi 15 secondi.
+
+**Perché non l'IP:** in Docker, il traffico dei client reali arriva spesso dietro NAT/gateway, quindi più browser distinti possono condividere lo stesso IP sorgente — con l'IP come chiave il contatore li conterebbe come un solo client (o, nel caso dell'healthcheck su `127.0.0.1`, ne aggiungerebbe uno fittizio). L'header `X-Client-ID` risolve entrambi i problemi.
+
+Le richieste dell'healthcheck Docker interno (`127.0.0.1`/`::1`, nessun header `X-Client-ID`) sono escluse esplicitamente dal conteggio tramite `HEALTHCHECK_IPS`.
 
 ### Crash
 `crash_server(reason)` → logga su stdout + `os._exit(1)`. Nessun popup, nessun lock file (rimossi in fase di dockerizzazione).
@@ -240,7 +254,7 @@ I campi camelCase del frontend (`giornoConsegna`, `fasciaOraria`, ecc.) vengono 
 
 ## 7. Frontend
 
-Il frontend V1 è **invariato** rispetto alla versione Windows. Tutti i dettagli di implementazione restano validi.
+Il frontend V1 è sostanzialmente invariato rispetto alla versione Windows, salvo le modifiche minime descritte in questa sezione (`api.js`: identificatore client; `render.js`: ordinamento sidebar).
 
 ### Costante API
 ```javascript
@@ -248,6 +262,13 @@ Il frontend V1 è **invariato** rispetto alla versione Windows. Tutti i dettagli
 export const API = `http://${window.location.hostname}:8080/api`;
 ```
 ⚠️ La porta è cambiata da `8742` (Windows) a `8080` (Docker). Già aggiornata in `store.js`.
+
+### Identificatore client (`api.js`)
+```javascript
+// api.js — generato una volta per sessione browser, salvato in sessionStorage
+const CLIENT_ID = generateClientId(); // via crypto.getRandomValues(), NON crypto.randomUUID()
+```
+⚠️ **Non usare `crypto.randomUUID()`**: richiede un secure context (HTTPS o `localhost`) ed è **indisponibile** quando l'app è servita via HTTP semplice su IP LAN — lo scenario normale di questo progetto. `crypto.getRandomValues()` non ha questa limitazione ed è usato per generare un ID esadecimale a 16 byte. Inviato come header `X-Client-ID` su `fetchData`, `postData`, `pingServer` (non su `remoteLog`, non rilevante per il conteggio).
 
 ### Stato globale (`store.js`)
 ```javascript
@@ -326,6 +347,8 @@ main.js
 ```
 ⚠️ In V1 `squadra` è una **stringa (nome)**. In V2 diventerà `squadra_id` (FK). Vedere sezione 11.
 
+**Ordinamento sidebar:** `renderSidebar()` in `render.js` mostra le giornate in ordine cronologico **decrescente** (più recente in cima): `sorted.sort((a, b) => b.data.localeCompare(a.data))`. L'ordine è solo di presentazione, non ha impatto sui dati né sulla vista giornata selezionata.
+
 ### `squadre` (array)
 ```json
 { "id": "sq001", "nome": "Squadra A", "colorIdx": 0 }
@@ -372,6 +395,10 @@ Click ✕ sulla card → la consegna torna "in_attesa", `giornoConsegna` e `fasc
 | Campo `extra` JSONB/JSON | Absorbe campi futuri senza migration dello schema |
 | `squadra` come stringa in V1 | Retrocompatibilità; diventerà `squadra_id` in V2 |
 | Healthcheck Python puro | Nessuna dipendenza da curl/wget nell'immagine |
+| Log HTTP agganciati al logger (`LOG_LEVEL`) | Log richieste utili in debug, silenziosi di default in produzione |
+| Contatore client per `X-Client-ID` (non IP) | In Docker più browser condividono lo stesso IP (NAT); l'IP da solo sottostima/sovrastima il conteggio |
+| `crypto.getRandomValues()` invece di `crypto.randomUUID()` | `randomUUID()` richiede secure context, indisponibile su HTTP semplice via IP LAN (scenario normale del progetto) |
+| Sidebar giornate in ordine cronologico decrescente | Le giornate più recenti/imminenti sono quelle consultate più spesso |
 
 ### Frontend e dati
 | Decisione | Motivazione |

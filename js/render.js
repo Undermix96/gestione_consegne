@@ -174,7 +174,7 @@ export function updateCittaFilter() {
 export function renderSidebar() {
   const list   = document.getElementById('sidebarList');
   list.innerHTML = '';
-  const sorted = [...db.giornate].sort((a, b) => a.data.localeCompare(b.data));
+  const sorted = [...db.giornate].sort((a, b) => b.data.localeCompare(a.data));
 
   if (sorted.length === 0) {
     list.innerHTML = '<div style="padding:12px 10px;color:var(--muted);font-size:12px;">Nessuna giornata.</div>';

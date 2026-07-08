@@ -19,16 +19,18 @@ PORT      = int(os.environ.get("PORT", 8080))
 BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
 
 file_lock = threading.Lock()
-connected_clients = set()   # set di indirizzi IP attivi
+connected_clients = set()   # set di chiavi client attive (client_id o ip fallback)
 clients_lock = threading.Lock()
-client_heartbeat = {}       # ip -> ultimo timestamp heartbeat
+client_heartbeat = {}       # chiave -> ultimo timestamp heartbeat
 
 # ─── LOGGING ────────────────────────────────────────────────────────────────
 
 def setup_logging():
+    level_name = os.environ.get("LOG_LEVEL", "INFO").upper()
+    level = getattr(logging, level_name, logging.INFO)
     logging.basicConfig(
         stream=sys.stdout,
-        level=logging.INFO,
+        level=level,
         format="%(asctime)s [%(levelname)s] %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
@@ -50,16 +52,27 @@ def crash_server(reason):
 
 # ─── CONNECTED CLIENTS ───────────────────────────────────────────────────────
 
-def register_client(ip):
+HEALTHCHECK_IPS = {"127.0.0.1", "::1"}
+
+def register_client(ip, client_id=None):
+    """
+    Registra un client come attivo. Usa client_id (header X-Client-ID) se
+    presente, altrimenti l'IP come fallback (retrocompatibilità).
+    Le richieste dell'healthcheck Docker (da localhost, senza client_id)
+    non vengono contate come utenti connessi.
+    """
+    if client_id is None and ip in HEALTHCHECK_IPS:
+        return
+    key = client_id or ip
     with clients_lock:
-        client_heartbeat[ip] = time.time()
-        connected_clients.add(ip)
+        client_heartbeat[key] = time.time()
+        connected_clients.add(key)
 
 def get_connected_count():
     """Conta i client con heartbeat negli ultimi 15 secondi."""
     now = time.time()
     with clients_lock:
-        active = {ip for ip, ts in client_heartbeat.items() if now - ts < 15}
+        active = {key for key, ts in client_heartbeat.items() if now - ts < 15}
         connected_clients.intersection_update(active)
         return len(active)
 
@@ -68,7 +81,10 @@ def get_connected_count():
 class Handler(http.server.SimpleHTTPRequestHandler):
 
     def log_message(self, format, *args):
-        pass  # silenzia log HTTP standard
+        log(format % args, "debug")
+
+    def log_error(self, format, *args):
+        log(format % args, "error")
 
     def do_OPTIONS(self):
         self.send_response(200)
@@ -78,7 +94,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def _cors(self):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Client-ID")
 
     def _json_response(self, code, obj):
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
@@ -91,14 +107,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def do_GET(self):
         client_ip = self.client_address[0]
+        client_id = self.headers.get("X-Client-ID")
 
         if self.path == "/api/ping":
-            register_client(client_ip)
+            register_client(client_ip, client_id)
             count = get_connected_count()
             self._json_response(200, {"ok": True, "clients": count})
 
         elif self.path == "/api/data":
-            register_client(client_ip)
+            register_client(client_ip, client_id)
             with file_lock:
                 data = read_data()
             data["_connectedClients"] = get_connected_count()
@@ -148,11 +165,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", 0))
             raw = self.rfile.read(length)
             client_ip = self.client_address[0]
+            client_id = self.headers.get("X-Client-ID")
             try:
                 incoming = json.loads(raw.decode("utf-8"))
                 with file_lock:
                     write_data(incoming)
-                register_client(client_ip)
+                register_client(client_ip, client_id)
                 self._json_response(200, {"ok": True})
             except Exception as e:
                 log(f"Errore POST /api/data: {e}", "error")

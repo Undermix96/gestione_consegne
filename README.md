@@ -22,6 +22,8 @@ Sistema completo per la gestione di consegne e installazioni, progettato per tea
 - **Contatore utenti connessi** in tempo reale
 - **Gestione disconnessioni** con schermata di blocco
 
+> **Nota tecnica sul contatore:** il conteggio si basa su un identificatore univoco per scheda browser (header `X-Client-ID`, generato con `crypto.getRandomValues()` e salvato in `sessionStorage`), non sull'indirizzo IP. Questo è necessario perché in Docker più client reali possono condividere lo stesso IP sorgente (NAT). Le richieste dell'healthcheck interno di Docker non vengono conteggiate.
+
 ## 🚀 Deploy con Docker
 
 ### Prerequisiti
@@ -63,13 +65,29 @@ docker compose --profile postgres up -d
 
 ### Importazione dati esistenti (one-shot)
 
-Se possiedi un `dati.json` proveniente dalla versione Windows, importalo così:
+Se possiedi un `dati.json` proveniente dalla versione Windows, importalo prima di avviare l'app.
 
+**Backend JSON:**
 ```bash
 docker compose run --rm \
   -v ./dati.json:/import/dati.json:ro \
   app python import_data.py
+
+docker compose up -d
 ```
+
+**Backend MySQL o PostgreSQL:** il database deve essere già avviato e pronto (`service_healthy`) prima di eseguire l'importazione, perché lo script inizializza lo schema e scrive i dati al suo interno. `docker compose run` avvia automaticamente le dipendenze dichiarate (`depends_on`), quindi il DB parte da solo se non è già attivo:
+
+```bash
+# 1. Importa (avvia automaticamente anche il DB, se non è già up)
+docker compose --profile mysql run --rm \
+  -v ./dati.json:/import/dati.json:ro \
+  app python import_data.py
+
+# 2. Avvia l'app
+docker compose --profile mysql up -d
+```
+Sostituire `mysql` con `postgres` per il backend PostgreSQL.
 
 Lo script è protetto da doppia esecuzione: dopo la prima importazione riuscita crea il file `/data/import_done`. Per forzare una reimportazione, rimuovere quel file dal volume prima di rieseguire.
 
@@ -133,6 +151,7 @@ gestione_consegne/
 | Variabile | Default | Descrizione |
 |-----------|---------|-------------|
 | `PORT` | `8080` | Porta interna del server |
+| `LOG_LEVEL` | `INFO` | Livello di log: `DEBUG` (include ogni richiesta HTTP) \| `INFO` \| `WARNING` \| `ERROR` |
 | `DB_BACKEND` | `json` | Backend dati: `json` \| `mysql` \| `postgres` |
 | `DATA_DIR` | `/data` | Directory file JSON (ignorata per mysql/postgres) |
 | `DB_HOST` | `db` | Host del database |
