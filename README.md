@@ -2,6 +2,8 @@
 
 Sistema completo per la gestione di consegne e installazioni, progettato per team di lavoro. Permette di pianificare le attività, assegnarle a squadre e monitorare lo stato delle consegne.
 
+> 🚧 **V2 in sviluppo (branch `v2-docker`):** login multi-utente, permessi per tipo di account e multi-negozio. Le sezioni marcate **🚧 V2** descrivono la versione in sviluppo e **non sono ancora disponibili** su `main`. Stato e fasi di avanzamento: `AGENTS.md`, §11.
+
 ## 📋 Funzionalità principali
 
 ### Gestione Consegne
@@ -23,6 +25,49 @@ Sistema completo per la gestione di consegne e installazioni, progettato per tea
 - **Gestione disconnessioni** con schermata di blocco
 
 > **Nota tecnica sul contatore:** il conteggio si basa su un identificatore univoco per scheda browser (header `X-Client-ID`, generato con `crypto.getRandomValues()` e salvato in `sessionStorage`), non sull'indirizzo IP. Questo è necessario perché in Docker più client reali possono condividere lo stesso IP sorgente (NAT). Le richieste dell'healthcheck interno di Docker non vengono conteggiate.
+
+### Autenticazione e multi-negozio 🚧 V2
+- **Login multi-utente** con Challenge-Response SHA-256 (compatibile con HTTP su rete locale)
+- **Tipi account configurabili** con permessi granulari, definiti dal superadmin
+- **Multi-negozio**: ogni utente appartiene a un negozio e vede solo i dati del proprio negozio
+- **Sessioni con scadenza** dopo 2 ore di inattività
+- **Protezione dalle modifiche concorrenti**: se due utenti modificano la stessa consegna, il secondo riceve un avviso e deve ricaricare
+- **Log degli accessi e delle operazioni** con utente e IP
+
+## 👥 Tipi account e permessi 🚧 V2
+
+- Il **superadmin** è un account puramente amministrativo: gestisce **negozi**, **tipi account** e **utenti**, ma **non ha accesso ai dati operativi** (consegne, giornate, squadre).
+- I **tipi account** sono creati dal superadmin, sono globali (condivisi da tutti i negozi) e contengono un insieme di permessi. Un utente ha un tipo account e un negozio.
+- Un utente senza tipo account assegnato non può accedere.
+- Modificare i permessi di un tipo account ha effetto al login successivo degli utenti; cambiare il tipo account di un utente ha effetto immediato (sessioni invalidate).
+
+| Gruppo | Permessi assegnabili |
+|--------|----------------------|
+| Consegne | `consegne.leggi`, `consegne.scrivi`, `consegne.elimina` |
+| Giornate | `giornate.leggi`, `giornate.crea`, `giornate.elimina`, `giornate.assegna`, `giornate.riordina`, `giornate.segna_completata` |
+| Squadre | `squadre.leggi`, `squadre.gestisci` |
+| Stampa | `stampa.pdf` |
+| Tipi account | `tipi_account.leggi` |
+| Utenti | `utenti.leggi`, `utenti.crea`, `utenti.modifica`, `utenti.elimina` |
+
+Riservati al superadmin (non assegnabili): `tipi_account.gestisci`, `negozi.gestisci`. Le dipendenze tra permessi (es. `consegne.scrivi` richiede `consegne.leggi`) sono segnalate con avvisi nel pannello, senza selezione automatica.
+
+## 🔐 Sicurezza in rete locale (HTTP) 🚧 V2
+
+Il sistema usa **Challenge-Response con SHA-256** per proteggere le credenziali su reti HTTP non cifrate:
+
+1. Il client richiede un **challenge** monouso al server (valido 60 secondi)
+2. Calcola `response = SHA-256(SHA-256(password) + challenge)` in JS puro (senza `crypto.subtle`, che non è disponibile su HTTP via IP LAN)
+3. Il server verifica la risposta senza mai ricevere la password in chiaro
+4. Il challenge è monouso e scade in 60 secondi, quindi una risposta intercettata non è riutilizzabile
+5. Le password sono memorizzate come `sha256(password)`
+
+> **Limiti noti:** chi accedesse al database o al volume dati potrebbe usare l'hash memorizzato per autenticarsi (è intrinseco a questo schema); non c'è un limite ai tentativi di login. Dettagli in `AGENTS.md`, §5.
+
+### Primo accesso
+- Username: `superadmin` — Password: `admin`
+- Il cambio password è **obbligatorio** al primo login. Eseguirlo subito dopo il primo avvio.
+- Poi, dal pannello: crea un **negozio** → un **tipo account** → un **utente** con quel negozio e quel tipo.
 
 ## 🚀 Deploy con Docker
 
@@ -99,12 +144,17 @@ Docker verifica automaticamente che il server risponda su `/api/ping` ogni 15 se
 docker inspect --format='{{.State.Health.Status}}' gestione-consegne-app-1
 ```
 
+### Migrazione dei dati V1 → V2 🚧
+
+Per portare i dati esistenti (V1) allo schema V2 è prevista la **migrazione con `migrate.py`**, che funzionerà con tutti e tre i backend (JSON, MySQL, PostgreSQL) sia come sorgente sia come destinazione. Lo script non è ancora disponibile (fase 4, `AGENTS.md` §11). **Non avviare la V2 su dati V1 senza migrazione.** Dopo la migrazione esiste solo il superadmin: gli altri utenti vanno creati dal pannello.
+
 ## 🛠️ Tecnologie
 
 ### Backend
 - **Python 3.13** — Server HTTP integrato (stdlib pura, nessun framework)
 - **Backend dati selezionabile**: file JSON separati, MySQL 8.4, PostgreSQL 16
 - **Log su stdout** — catturati e gestiti da Docker
+- 🚧 **V2:** accesso ai dati per singolo record (su tutti i backend) con controllo di concorrenza (`versione`); autenticazione Challenge-Response SHA-256 con sessioni in memoria
 
 ### Frontend
 - **HTML5 / CSS3** — Struttura e stile, senza build step
@@ -117,9 +167,10 @@ docker inspect --format='{{.State.Health.Status}}' gestione-consegne-app-1
 
 ```
 gestione_consegne/
-├── server.py               # Server HTTP e logica backend
+├── server.py               # Server HTTP e logica backend (V2: auth, sessioni, REST, permessi)
 ├── storage.py              # Astrazione backend dati (json/mysql/postgres)
 ├── import_data.py          # Script importazione one-shot da dati.json legacy
+├── migrate.py              # 🚧 V2: migrazione V1→V2 e tra backend (non ancora presente)
 ├── requirements.txt        # Dipendenze Python (mysql-connector, psycopg2)
 ├── Dockerfile              # Immagine Docker
 ├── compose.yaml            # Orchestrazione container e profili DB
@@ -143,8 +194,15 @@ gestione_consegne/
     ├── modal-consegna.js   # Modal creazione/modifica consegna, gestione articoli
     ├── modal-select.js     # Modal selezione consegne da aggiungere a giornata
     ├── squadre.js          # CRUD squadre: add, rename, color, delete
-    └── stampa.js           # Stampa PDF giornata
+    ├── stampa.js           # Stampa PDF giornata
+    ├── sha256.js           # 🚧 V2: SHA-256 puro JS per il Challenge-Response
+    ├── auth.js             # 🚧 V2: login, logout, cambio password, token di sessione
+    ├── permessi.js         # 🚧 V2: lista permessi, dipendenze, hasPermesso()
+    ├── modal-utenti.js     # 🚧 V2: gestione utenti (permessi utenti.*)
+    └── modal-admin.js      # 🚧 V2: pannello superadmin (caricato solo per il superadmin)
 ```
+
+In V2 i file `api.js`, `sync.js`, `store.js`, `render.js`, `giornate.js`, `squadre.js`, `modal-consegna.js` e `modal-select.js` passano a chiamate REST e polling a timestamp (dettagli in `AGENTS.md`, §3 e §7).
 
 ## ⚙️ Variabili d'ambiente
 
@@ -182,6 +240,10 @@ Il sistema supporta fino a 8 squadre con colori assegnabili:
 1. **Lista Consegne** — Visualizzazione tabellare con filtri per stato e città
 2. **Giornate** — Pianificazione per date con drag & drop e sidebar
 3. **Impostazioni** — Gestione squadre con rinomina e selezione colore
+4. 🚧 **V2 — Gestione utenti** — per gli account con permessi `utenti.*`
+5. 🚧 **V2 — Pannello superadmin** — Negozi, Tipi account, Utenti (il superadmin vede solo questo)
+
+In V2 le voci visibili dipendono dai permessi del tipo account dell'utente.
 
 ### Logica stati consegna
 
@@ -194,6 +256,22 @@ Il sistema supporta fino a 8 squadre con colori assegnabili:
 | `completata` | Consegnata | ❌ No |
 | `annullata` | Cancellata | ❌ No |
 
+## 📊 Log e Audit
+
+I log vengono scritti su **stdout** e gestiti da Docker (`docker compose logs -f app`); il livello si imposta con `LOG_LEVEL`.
+
+🚧 **V2:** ogni operazione viene registrata lato server con utente e IP, per categoria:
+
+```
+2026-06-18 10:00:00 [INFO]  [AUTH]         superadmin ha effettuato il login da 192.168.1.15
+2026-06-18 10:05:00 [INFO]  [NEGOZI]       Negozio 'Sede principale' creato da 'superadmin'
+2026-06-18 10:10:00 [INFO]  [UTENTI]       Utente 'mario.rossi' (Admin) creato per negozio 'Sede principale' da 'superadmin'
+2026-06-18 10:15:00 [INFO]  [DATI]         'mario.rossi' — Nuova consegna: Rossi Mario
+2026-06-18 10:30:00 [WARN]  [AUTH]         Login fallito — password errata per 'pippo' da 192.168.1.33
+```
+
+Categorie: `[AUTH]`, `[UTENTI]`, `[DATI]`, `[NEGOZI]`, `[TIPI_ACCOUNT]`. In Docker l'IP registrato può essere quello del gateway/NAT e non quello reale del client.
+
 ## 🛡️ Sicurezza
 
 - Utente non-root (`appuser:1001`) nel container
@@ -202,6 +280,8 @@ Il sistema supporta fino a 8 squadre con colori assegnabili:
 - Scrittura atomica dei dati (tmp + rename)
 - Protezione path traversal nel file server
 - Healthcheck attivo su `/api/ping`
+- 🚧 **V2:** autenticazione obbligatoria, permessi per tipo account, isolamento dei dati per negozio, log degli accessi (vedi sezioni dedicate sopra)
+- 🚧 **V2:** istanza applicativa unica (sessioni in memoria): un riavvio del container disconnette gli utenti
 
 ## 🔧 Linee guida per sviluppatori
 
@@ -210,6 +290,12 @@ Il sistema supporta fino a 8 squadre con colori assegnabili:
 2. Se aggiunge un nuovo tipo di dato → aggiorna `store.js` con il setter
 3. Se aggiunge una chiamata HTTP → aggiungila in `api.js`
 4. Se la funzione deve essere chiamabile da un `onclick` → registrala su `window` in `main.js`
+
+### 🚧 V2 — Regole per i nuovi endpoint e per lo schema
+1. Un nuovo endpoint operativo verifica nell'ordine: token valido (401) → permesso (403) → `negozio_id` della risorsa (403)
+2. Filtra sempre per `negozio_id` e registra l'operazione nel log con categoria `[DATI]`
+3. Le modifiche allo schema vanno fatte in `storage.py` su **tutti e tre** i backend e riportate in `migrate.py`
+4. Prima di iniziare una fase di sviluppo V2 leggi `AGENTS.md` §11 (stato, metodo, punti aperti)
 
 ### Build e push dell'immagine
 ```bash

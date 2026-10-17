@@ -1,8 +1,10 @@
 # AGENTS.md — Gestione Consegne
 
-Documento di contesto per agenti AI. Descrive stato attuale del progetto, architettura, decisioni prese, convenzioni adottate, piano di upgrade V2 e istruzioni operative per l'agente.
+Documento di contesto per agenti AI. Descrive stato attuale del progetto, architettura, decisioni prese, convenzioni adottate, stato di implementazione V2 e istruzioni operative per l'agente.
 
 ---
+
+> **Stato del branch `v2-docker`:** questo documento descrive la **V2** (obiettivo del branch). Il codice è ancora V1 finché le fasi in [§11](#11-stato-di-implementazione-v2) non sono completate. Le parti non ancora implementate sono marcate **🚧 V2**. Il design V2 proviene dal branch `dev` (versione Windows, mai andata in produzione) ed è stato adattato a Docker e allo storage a più backend.
 
 ## Indice
 
@@ -16,7 +18,7 @@ Documento di contesto per agenti AI. Descrive stato attuale del progetto, archit
 8. [Struttura dati](#8-struttura-dati)
 9. [Flusso operativo tipico](#9-flusso-operativo-tipico)
 10. [Decisioni progettuali già prese](#10-decisioni-progettuali-già-prese)
-11. [Piano upgrade V2](#11-piano-upgrade-v2)
+11. [Stato di implementazione V2](#11-stato-di-implementazione-v2)
 12. [Commit message convention](#12-commit-message-convention)
 
 ---
@@ -60,6 +62,8 @@ Documento di contesto per agenti AI. Descrive stato attuale del progetto, archit
 | `js/store.js` | Un errore rompe lo stato globale dell'intera app |
 | `Dockerfile` | Un errore impedisce il build dell'immagine |
 | `compose.yaml` | Un errore impedisce l'avvio dei container |
+| `js/auth.js` + `js/sha256.js` (V2) | Un errore blocca il login di tutti gli utenti |
+| `migrate.py` (V2) | Un errore può corrompere o duplicare i dati in produzione |
 
 ### 1.6 Aggiorna la documentazione insieme al codice
 
@@ -71,16 +75,34 @@ Ogni volta che una modifica cambia endpoint, strutture dati, o decisioni progett
 
 **Gestione Consegne** è un gestionale web per organizzare le consegne di prodotti di elettronica effettuate da squadre di consegna. Distribuito come container Docker, accessibile via browser da qualsiasi client nella stessa rete.
 
-### Utenti (V1 attuale)
-- Accesso anonimo: chiunque sulla LAN può leggere e scrivere
+### Utenti
 - Uso sporadico: 5-10 minuti alla volta, alcune volte al giorno
-- Raramente due utenti lavorano contemporaneamente
+- Raramente due utenti lavorano contemporaneamente (la V2 protegge comunque dalle scritture concorrenti con l'optimistic locking)
+- Rete aziendale LAN wireless + cablata con dispositivi personali dei dipendenti connessi: **rete non completamente trusted** (motivo dell'autenticazione V2)
 
-### Versione corrente: V1 (Docker)
-- Nessuna autenticazione
+### Vincoli fondamentali (NON modificare senza approvazione esplicita)
+- **Nessuna installazione sui client**: si usa solo il browser
+- **Nessun cloud**: dati privati, non possono uscire dalla rete locale
+- **Integrità dei dati assoluta**: il programma è usato per lavoro
+- **HTTP puro (no HTTPS)**: la sicurezza delle credenziali è garantita dal sistema Challenge-Response (§5)
+- **Frontend senza dipendenze esterne né build step**: i client non hanno internet; solo JS ES Modules nativi
+- **Docker** come unico ambiente di esecuzione (sviluppo e produzione)
+
+### Versione corrente: V1 (Docker) — branch `main`
+- Nessuna autenticazione: chiunque sulla LAN può leggere e scrivere
 - Backend dati selezionabile: JSON / MySQL / PostgreSQL
 - API: due endpoint unici (`GET /api/data`, `POST /api/data`)
 - Frontend invariato rispetto all'originale Windows
+
+### Versione obiettivo: V2 🚧 — branch `v2-docker`
+- **Login multi-utente** con Challenge-Response SHA-256 e sessioni in memoria
+- **Tipi account dinamici** con permessi granulari, creati dal superadmin
+- **Multi-tenancy**: ogni entità operativa appartiene a un negozio; ogni utente vede solo il proprio negozio
+- **Superadmin** solo amministrativo (negozi, tipi account, utenti): nessun accesso ai dati operativi
+- **API REST** per singola operazione, al posto di `GET/POST /api/data`
+- **Storage per singolo record** (`storage.py`) su tutti e tre i backend, con **optimistic locking** (`versione`)
+- Polling a timestamp, log 100% server-side
+- Utenti, negozi e tipi account sono gestiti dallo stesso layer `storage.py` delle entità operative
 
 ---
 
@@ -88,32 +110,40 @@ Ogni volta che una modifica cambia endpoint, strutture dati, o decisioni progett
 
 ```
 gestione_consegne/
-├── server.py               # Server HTTP e logica backend
-├── storage.py              # Astrazione backend dati (json/mysql/postgres)
-├── import_data.py          # Importazione one-shot da dati.json legacy
+├── server.py               # Server HTTP e logica backend (V2: auth, sessioni, REST, permessi)
+├── storage.py              # Astrazione backend dati (json/mysql/postgres) (V2: API per singolo record)
+├── import_data.py          # Importazione one-shot da dati.json legacy (V1)
+├── migrate.py              # 🚧 V2: migrazione V1→V2 e tra backend (vedi §11, fase 4)
 ├── requirements.txt        # Dipendenze Python
 ├── Dockerfile              # Immagine Docker (python:3.13-slim-bookworm)
 ├── compose.yaml            # Orchestrazione (profili: mysql, postgres)
-├── index.html              # Shell HTML
+├── index.html              # Shell HTML (V2: + overlay login e cambio password, pannelli utenti/admin)
 ├── css/
 │   ├── theme.css
 │   ├── layout.css
-│   └── components.css
+│   └── components.css      # (V2: + overlay login, pannello admin)
 └── js/
-    ├── main.js             # Entry point
-    ├── store.js            # Stato globale
-    ├── api.js              # Layer HTTP
-    ├── sync.js             # Sync dati e ping
-    ├── render.js           # Rendering viste
+    ├── main.js             # Entry point (V2: init condizionale dopo verifica token)
+    ├── store.js            # Stato globale (V2: currentUser, localTimestamps)
+    ├── api.js              # Layer HTTP (V2: X-Session-Token, intercept 401; sempre X-Client-ID)
+    ├── sync.js             # Sync dati e ping (V2: polling a timestamp, applyServerResponse)
+    ├── render.js           # Rendering viste (V2: hasPermesso())
     ├── utils.js            # Helper puri
     ├── theme.js            # Gestione tema
     ├── dragdrop.js         # Drag & drop
-    ├── giornate.js         # Logica giornate
-    ├── modal-consegna.js   # Modal consegna
-    ├── modal-select.js     # Modal selezione
-    ├── squadre.js          # CRUD squadre
-    └── stampa.js           # Stampa PDF
+    ├── giornate.js         # Logica giornate (V2: REST)
+    ├── modal-consegna.js   # Modal consegna (V2: REST)
+    ├── modal-select.js     # Modal selezione (V2: REST)
+    ├── squadre.js          # CRUD squadre (V2: REST)
+    ├── stampa.js           # Stampa PDF
+    ├── sha256.js           # 🚧 V2: SHA-256 puro JS (no crypto.subtle)
+    ├── auth.js             # 🚧 V2: login, logout, cambio password, token in sessionStorage
+    ├── permessi.js         # 🚧 V2: lista permessi, dipendenze, hasPermesso()
+    ├── modal-utenti.js     # 🚧 V2: gestione utenti (account con permessi utenti.*)
+    └── modal-admin.js      # 🚧 V2: pannello superadmin (caricato dinamicamente solo per il superadmin)
 ```
+
+**Dati a runtime:** nel volume `/data` (backend JSON) un file per collezione (`consegne.json`, `giornate.json`, `squadre.json` e, in V2, `negozi.json`, `tipi_account.json`, `utenti.json`) più `backup/`; con i backend MySQL/PostgreSQL le stesse collezioni sono tabelle. **Nessun dato applicativo è scritto fuori da `storage.py`** (il container è `read_only`).
 
 ---
 
@@ -177,6 +207,13 @@ Protetto da file flag `/data/import_done`. Per i backend DB il container DB deve
 | `DB_PASSWORD` | — | Password DB |
 | `IMPORT_SOURCE` | `/import/dati.json` | Sorgente import |
 
+### Implicazioni della V2 su Docker 🚧
+- **Istanza `app` unica, niente repliche:** sessioni e challenge sono in memoria del processo. Un riavvio del container disconnette tutti gli utenti (devono rifare il login).
+- **Primo avvio:** se non esiste il superadmin, il server lo crea (`superadmin` / `admin`, `primo_login = true`: cambio password obbligatorio). Vedi §5.
+- **Nessun file applicativo fuori da `storage.py`:** utenti, negozi e tipi account seguono lo stesso backend scelto con `DB_BACKEND` (nessun JSON "speciale" accanto al codice: il filesystem del container è in sola lettura).
+- **Migrazione:** `migrate.py` (🚧, §11 fase 4) porta i dati V1 allo schema V2 e permette di passare da un backend all'altro. `import_data.py` resta lo strumento per il solo `dati.json` legacy Windows.
+- **Variabili d'ambiente:** nessuna nuova variabile prevista per la V2 (da riconfermare in fase 1/4).
+
 ---
 
 ## 5. Server Python (`server.py`)
@@ -185,9 +222,12 @@ Protetto da file flag `/data/import_done`. Per i backend DB il container DB deve
 ```python
 PORT     = int(os.environ.get("PORT", 8080))
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# 🚧 V2
+SESSION_TTL   = 7200   # 2 ore di inattività
+CHALLENGE_TTL = 60     # secondi
 ```
 
-### Endpoint HTTP V1
+### Endpoint HTTP — V1 (attuale su `main`, rimossi in V2)
 | Metodo | Path | Descrizione |
 |--------|------|-------------|
 | GET | `/api/ping` | Healthcheck. Risponde `{"ok": true, "clients": N}`. Registra il client. |
@@ -196,8 +236,182 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 | POST | `/api/log` | Riceve `{"msg": "..."}` dal client e lo scrive nel log. |
 | GET | `/*` | File statici dalla directory `BASE_DIR`. |
 
+### Endpoint HTTP — V2 🚧
+Sostituiscono `GET/POST /api/data` e `POST /api/log`. `GET /api/ping` resta senza autenticazione obbligatoria (usato dall'healthcheck Docker); se il client invia `X-Session-Token` valido la sessione viene rinnovata. `GET /*` (file statici) invariato.
+
+| Metodo | Path | Auth | Permesso richiesto | Descrizione |
+|--------|------|------|--------------------|-------------|
+| GET | `/api/auth/challenge` | No | — | Genera challenge monouso |
+| POST | `/api/auth/login` | No | — | Login → token + permessi |
+| POST | `/api/auth/logout` | Token | — | Invalida sessione |
+| POST | `/api/auth/change-password` | Token | — | Cambia propria password |
+| GET | `/api/ping` | Opzionale | — | Heartbeat + contatore client |
+| GET | `/api/stato` | Token | — (no superadmin) | Timestamp categorie per polling |
+| GET | `/api/negozi` | Token | superadmin | Lista negozi |
+| POST | `/api/negozi` | Token | superadmin | Crea negozio |
+| PUT | `/api/negozi/:id` | Token | superadmin | Rinomina negozio |
+| DELETE | `/api/negozi/:id` | Token | superadmin | Elimina negozio (solo se senza utenti) |
+| GET | `/api/tipi-account` | Token | `tipi_account.leggi` | Lista tipi account |
+| POST | `/api/tipi-account` | Token | superadmin | Crea tipo account |
+| PUT | `/api/tipi-account/:id` | Token | superadmin | Modifica tipo account |
+| DELETE | `/api/tipi-account/:id` | Token | superadmin | Elimina tipo (solo se senza utenti) |
+| GET | `/api/utenti` | Token | `utenti.leggi` | Lista utenti (filtrata per negozio) |
+| POST | `/api/utenti` | Token | `utenti.crea` | Crea utente |
+| PUT | `/api/utenti/:id/password` | Token | `utenti.modifica` | Cambia password utente |
+| PUT | `/api/utenti/:id/tipo` | Token | `utenti.modifica` | Cambia tipo account utente |
+| DELETE | `/api/utenti/:id` | Token | `utenti.elimina` | Elimina utente |
+| GET | `/api/consegne` | Token | `consegne.leggi` | Lista consegne del negozio |
+| POST | `/api/consegne` | Token | `consegne.scrivi` | Crea consegna |
+| PUT | `/api/consegne/:id` | Token | `consegne.scrivi` | Modifica consegna |
+| DELETE | `/api/consegne/:id` | Token | `consegne.elimina` | Elimina consegna |
+| GET | `/api/giornate` | Token | `giornate.leggi` | Lista giornate del negozio |
+| POST | `/api/giornate` | Token | `giornate.crea` | Crea giornata |
+| DELETE | `/api/giornate/:id` | Token | `giornate.elimina` | Elimina giornata |
+| POST | `/api/giornate/:id/assegna` | Token | `giornate.assegna` | Aggiunge consegne |
+| DELETE | `/api/giornate/:id/assegna/:cid` | Token | `giornate.assegna` | Rimuove consegna |
+| PUT | `/api/giornate/:id/riordina` | Token | `giornate.riordina` | Riordina consegne |
+| PUT | `/api/giornate/:id/consegne/:cid/completa` | Token | `giornate.segna_completata` | Segna completata |
+| GET | `/api/squadre` | Token | `squadre.leggi` | Lista squadre del negozio |
+| POST | `/api/squadre` | Token | `squadre.gestisci` | Crea squadra |
+| PUT | `/api/squadre/:id` | Token | `squadre.gestisci` | Modifica squadra |
+| DELETE | `/api/squadre/:id` | Token | `squadre.gestisci` | Elimina squadra |
+
+### Verifica permessi — ordine server
+1. Token valido → 401
+2. `is_superadmin` → accesso garantito solo agli endpoint superadmin, 403 su operativi
+3. Permesso specifico in `session.permessi` → 403
+4. `negozio_id` risorsa == `session.negozio_id` → 403
+
+### Risposta endpoint di scrittura
+Ogni endpoint di scrittura risponde con il db aggiornato del negozio:
+```json
+{ "consegne": [...], "giornate": [...], "squadre": [...], "_connectedClients": N }
+```
+Il client aggiorna lo stato locale con `applyServerResponse()`.
+
+### Account superadmin
+- Unico, non eliminabile, non modificabile da nessuno (tranne la propria password)
+- Identificato dalla colonna **`is_superadmin = true`** (non da un marker implicito); `id` fisso `u_superadmin`; `tipo_account_id` e `negozio_id` sono sempre `null`
+- Permessi hardcoded nel server (non assegnabili): `tipi_account.gestisci`, `negozi.gestisci`, più tutti i permessi `utenti.*` e `tipi_account.leggi`
+- **Non ha accesso ai dati operativi** (consegne, giornate, squadre): 403 su quegli endpoint
+- Vista esclusiva: pannello admin con tre sezioni (Negozi, Tipi account, Utenti)
+- Creato al primo avvio con password di default `admin`; **cambio password obbligatorio** al primo login (`must_change_password`)
+- Un utente con `tipo_account_id: null` che non sia superadmin è "non configurato" e non può accedere
+
+### Tipi account (dinamici, creati dal superadmin)
+- Ogni tipo ha un nome e un set di permessi assegnabili
+- Globali: condivisi tra tutti i negozi
+- Non eliminabili se hanno utenti associati
+
+### Permessi assegnabili ai tipi account
+
+```
+consegne.leggi          giornate.leggi          squadre.leggi
+consegne.scrivi         giornate.crea           squadre.gestisci
+consegne.elimina        giornate.elimina        stampa.pdf
+                        giornate.assegna        tipi_account.leggi
+                        giornate.riordina       utenti.leggi
+                        giornate.segna_completata utenti.crea
+                                                utenti.modifica
+                                                utenti.elimina
+```
+
+Permessi hardcoded superadmin (non assegnabili): `tipi_account.gestisci`, `negozi.gestisci`, + tutti i permessi utenti e `tipi_account.leggi`.
+
+### Dipendenze permessi (avvisi visivi nel frontend, NO selezione automatica)
+
+```
+consegne.scrivi            → consegne.leggi
+consegne.elimina           → consegne.leggi
+giornate.crea              → giornate.leggi, squadre.leggi
+giornate.elimina           → giornate.leggi
+giornate.assegna           → giornate.leggi, consegne.leggi
+giornate.riordina          → giornate.leggi
+giornate.segna_completata  → giornate.leggi
+squadre.gestisci           → squadre.leggi
+stampa.pdf                 → giornate.leggi, consegne.leggi
+utenti.crea                → utenti.leggi, tipi_account.leggi
+utenti.modifica            → utenti.leggi, tipi_account.leggi
+utenti.elimina             → utenti.leggi
+```
+
+### Multi-tenancy (negozi)
+- Ogni utente (escluso superadmin) appartiene a un negozio
+- Ogni entità operativa (consegna, giornata, squadra) ha `negozio_id`
+- Il server filtra per `negozio_id` della sessione su ogni endpoint operativo
+- Il superadmin può creare utenti per qualsiasi negozio; gli altri creano solo per il proprio
+
+### Challenge-Response (SHA-256)
+
+```
+1. GET  /api/auth/challenge  →  { challenge: "a3f9..." }  (hex 32 byte, monouso, TTL 60s)
+2. Client: h1 = sha256(password), response = sha256(h1 + challenge)
+3. POST /api/auth/login  →  { username, challenge, response }
+4. Server: expected = sha256(stored_h1 + challenge)
+           confronta con secrets.compare_digest
+```
+
+### Sessioni in memoria
+
+```python
+sessions = {
+    "token_abc": {
+        "user_id":              "u_abc",
+        "username":             "mario.rossi",
+        "negozio_id":           "n_abc123",   # null per superadmin
+        "permessi":             ["consegne.leggi", "..."],
+        "is_superadmin":        False,
+        "last_seen":            1718528400.0,
+        "expires":              1718535600.0,
+        "must_change_password": False
+    }
+}
+```
+
+I permessi vengono copiati nella sessione al login. Modifiche ai permessi di un tipo account hanno effetto al login successivo (sessioni attive non invalidate). **Eccezione:** cambio tipo account invalida immediatamente le sessioni dell'utente.
+
+### Utente senza tipo account
+Un utente con `tipo_account_id: null` viene bloccato al login con messaggio "Account non configurato. Contatta l'amministratore." (escluso superadmin).
+
+### Regole lato server (hardcoded, non aggirabili dal frontend) 🚧
+- Superadmin non eliminabile, non modificabile tranne la propria password
+- Utente con `tipo_account_id: null` non può fare login (escluso superadmin)
+- Tipo account non eliminabile se ha utenti associati
+- Negozio non eliminabile se ha utenti associati
+- Modifica dei permessi di un tipo account: effettiva al login successivo (sessioni attive non invalidate)
+- Cambio del tipo account di un utente: invalida immediatamente le sessioni di quell'utente
+- Superadmin riceve 403 su tutti gli endpoint operativi (`/api/consegne`, `/api/giornate`, `/api/squadre`, `/api/stato`)
+- Il server filtra sempre per `negozio_id` su tutti gli endpoint operativi
+- Un utente non può eliminare se stesso
+- Gli errori di concorrenza (`versione` non coincidente) rispondono **409 Conflict**; token mancante/scaduto **401**; permesso o negozio non coerente **403**
+
+### Optimistic locking 🚧
+- Ogni entità operativa ha `versione` (intero, parte da 1)
+- Il client include `versione` nelle richieste `PUT`
+- Se `client_versione != versione` salvata → **409 Conflict** con messaggio "la consegna/giornata è stata modificata da un altro utente. Ricarica e riprova."
+- La `versione` viene incrementata a ogni scrittura riuscita
+- **Il confronto è atomico nel layer `storage.py`** (su DB: `UPDATE ... WHERE id = ? AND versione = ?`; su JSON: sotto lock di collezione). Il server non fa read-then-write separati.
+
+### Polling e sincronizzazione 🚧
+- **Ping**: ogni 2 secondi, 1 fallimento consecutivo → overlay disconnessione (in V1 la soglia è 2)
+- **Polling**: ogni 8 secondi via `GET /api/stato` → confronta i timestamp per categoria (`consegne`, `giornate`, `squadre`) → scarica solo le categorie cambiate → render solo se necessario
+- **Scritture**: la risposta contiene già il db aggiornato del negozio → `applyServerResponse()` aggiorna lo stato locale subito, senza attendere il polling
+- **Offline**: overlay bloccante, modifiche locali perse (comportamento invariato rispetto a V1)
+- I timestamp di polling sono **in memoria e globali** (non per negozio): una scrittura in un negozio può far riscaricare i dati agli altri negozi (le risposte restano comunque filtrate per negozio). Si azzerano al riavvio. Vedi punti aperti in §11.
+
 ### Logging
 Tutto su stdout (catturato da Docker). Formato: `YYYY-MM-DD HH:MM:SS [LEVEL] messaggio`. Livello configurabile via `LOG_LEVEL` (default `INFO`). `log_message`/`log_error` di `BaseHTTPRequestHandler` sono agganciati al logger: le richieste HTTP finiscono a livello `DEBUG` (visibili solo con `LOG_LEVEL=DEBUG`), gli errori HTTP a livello `ERROR`.
+
+**V2 🚧 — categorie e formato:** tutti i log sono generati lato server, nessun `POST /api/log` dal client.
+```
+2026-06-18 10:00:00 [INFO]  [AUTH]         superadmin ha effettuato il login da 192.168.1.15
+2026-06-18 10:05:00 [INFO]  [NEGOZI]       Negozio 'Sede principale' creato da 'superadmin'
+2026-06-18 10:06:00 [INFO]  [TIPI_ACCOUNT] Tipo 'Admin' creato da 'superadmin'
+2026-06-18 10:10:00 [INFO]  [UTENTI]       Utente 'mario.rossi' (Admin) creato per negozio 'Sede principale' da 'superadmin'
+2026-06-18 10:15:00 [INFO]  [DATI]         'mario.rossi' — Nuova consegna: Rossi Mario
+2026-06-18 10:30:00 [WARN]  [AUTH]         Login fallito — password errata per 'pippo' da 192.168.1.33
+```
+Categorie: `[AUTH]`, `[UTENTI]`, `[DATI]`, `[NEGOZI]`, `[TIPI_ACCOUNT]`. L'IP nei log di autenticazione è quello visto dal container (in Docker può essere quello del gateway, vedi "Contatore client connessi").
 
 ### Contatore client connessi
 Heartbeat tramite `client_heartbeat{}`, chiave = header `X-Client-ID` (UUID-like generato dal browser con `crypto.getRandomValues()`, salvato in `sessionStorage`), con fallback sull'IP se l'header manca (retrocompatibilità, es. richieste esterne senza frontend). Un client è "attivo" se ha fatto una richiesta (ping o data) negli ultimi 15 secondi.
@@ -217,24 +431,62 @@ Le richieste dell'healthcheck Docker interno (`127.0.0.1`/`::1`, nessun header `
 - `open_browser()`
 - File `avvia.bat`, `avvia.ps1`, `configura_firewall.bat`
 
+
+### Limiti noti della sicurezza V2 🚧
+- **Hash memorizzato = credenziale equivalente.** Nel Challenge-Response il server deve conoscere `sha256(password)` per calcolare la risposta attesa; chi leggesse quel valore dal DB/volume potrebbe autenticarsi senza conoscere la password. Il DB non è esposto sull'host e il volume `/data` è raggiungibile solo da chi amministra l'host Docker; il rischio è accettato per poter proteggere le credenziali su HTTP senza `crypto.subtle`. Da non cambiare senza una decisione esplicita.
+- **Password di default del superadmin (`admin`) finché non viene cambiata al primo accesso:** chiunque sulla LAN che la conosca potrebbe entrare nel pannello admin. Cambiarla subito dopo il primo avvio.
+- **Rate limiting dei tentativi di login:** non previsto in questa versione (i tentativi falliti sono solo loggati).
+- **Sessioni e challenge in memoria:** perse a ogni riavvio; incompatibili con più repliche (vedi §4).
+
 ---
 
 ## 6. Storage layer (`storage.py`)
 
-### Interfaccia pubblica
+### Stato attuale (V1)
 ```python
 init_storage()       # chiamata una volta all'avvio del server
 read_data()          # → {"consegne": [], "giornate": [], "squadre": []}
 write_data(data)     # salva il dict completo
 make_backup()        # snapshot JSON (no-op per DB)
 ```
+In V2 `read_data()`/`write_data()` **non sono più usate dal server**: restano solo come strumenti per `import_data.py` e per leggere i dati V1 in `migrate.py`.
+
+### Principi V2 🚧
+- **Accesso per singolo record**, su tutti i backend: nessuna scrittura "tutta la tabella". I backend SQL non fanno più `DELETE` + reinserimento di tutto: una scrittura fallita non può toccare i dati degli altri negozi.
+- **Optimistic locking atomico nel layer di storage:** l'aggiornamento è condizionato a `versione` e la incrementa; se non coincide si solleva un errore di conflitto (che il server traduce in 409).
+- **Il filtro per `negozio_id` si applica nella query/lettura**, non dopo aver caricato tutto.
+- **Operazioni multi-riga in transazione** (backend SQL): assegnazione, rimozione e riordino delle consegne di una giornata.
+- **Stessa semantica su json/mysql/postgres:** un comportamento si considera corretto solo se identico sui tre backend (suite di test condivisa, fase 1).
+- Nessun dato applicativo fuori da `storage.py`: anche `utenti`, `negozi`, `tipi_account` passano da qui.
+
+### Collezioni V2 🚧
+`consegne`, `giornate`, `squadre`, `negozi`, `tipi_account`, `utenti` (+ tabella di join `giornata_consegne` sui backend SQL).
+
+### Interfaccia pubblica V2 — **bozza** 🚧
+> La firma definitiva si decide in fase 1 con revisione. Questa è la proposta di partenza.
+```python
+init_storage()
+list_records(collection, filters=None)            # filters: uguaglianza, es. {"negozio_id": "n_..."}
+get_record(collection, id)                        # → dict | None
+insert_record(collection, record)                 # versione = 1 dove prevista
+update_record(collection, id, changes, expected_versione=None)
+                                                  # solleva ConflictError se la versione non coincide; incrementa versione
+delete_record(collection, id)
+# giornate ↔ consegne (transazione sui backend SQL)
+giornata_assegna(giornata_id, consegna_ids)
+giornata_rimuovi(giornata_id, consegna_id)
+giornata_riordina(giornata_id, consegna_ids_ordinati)
+giornata_completa(giornata_id, consegna_id, completata)
+make_backup()                                     # snapshot JSON (no-op per DB)
+```
+Eccezioni previste: `ConflictError` (→ 409), `NotFoundError` (→ 404), `StorageError` (errore di persistenza). Il comportamento del server su `StorageError` (crash o 500) è un punto aperto (§11).
 
 ### Backend JSON
-File separati: `consegne.json`, `giornate.json`, `squadre.json` in `DATA_DIR`.
-Scrittura atomica (`.tmp` + `os.replace()`). Backup in `DATA_DIR/backup/` (max 20 per tipo).
+File separati in `DATA_DIR`, ciascuno **un array di record**: `consegne.json`, `giornate.json`, `squadre.json` e 🚧 V2 `negozi.json`, `tipi_account.json`, `utenti.json`.
+Scrittura atomica (`.tmp` + `os.replace()`) sotto lock per collezione. Backup in `DATA_DIR/backup/` (max 20 per tipo). L'API è per record, ma internamente il backend JSON riscrive il file della collezione: adatto a installazioni piccole (scelta consapevole, vedi §10).
 
 ### Backend MySQL / PostgreSQL
-Schema nativo (non blob JSON). Tabelle:
+Schema nativo (non blob JSON). Tabelle V1:
 
 | Tabella | Descrizione |
 |---------|-------------|
@@ -247,6 +499,50 @@ Il campo `extra` (JSONB in Postgres, JSON in MySQL) cattura eventuali campi aggi
 
 I campi camelCase del frontend (`giornoConsegna`, `fasciaOraria`, ecc.) vengono normalizzati a snake_case al salvataggio e riconvertiti alla lettura.
 
+### Schema DB V2 🚧
+Le tabelle V1 vengono **estese, non sostituite**. Sintassi MySQL; su PostgreSQL: `JSONB` al posto di `JSON`, `BOOLEAN` nativo.
+
+```sql
+-- NUOVE tabelle
+CREATE TABLE negozi (
+    id        VARCHAR(36) PRIMARY KEY,
+    nome      VARCHAR(255) NOT NULL,
+    creato_il TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE tipi_account (
+    id            VARCHAR(36) PRIMARY KEY,
+    nome          VARCHAR(255) NOT NULL UNIQUE,
+    permessi      TEXT NOT NULL,           -- JSON array: '["consegne.leggi","stampa.pdf"]'
+    creato_il     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    modificato_il TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE utenti (
+    id               VARCHAR(36) PRIMARY KEY,
+    username         VARCHAR(150) NOT NULL UNIQUE,
+    password_hash    VARCHAR(64) NOT NULL,   -- sha256(password), hex (vedi "Limiti noti" in §5)
+    tipo_account_id  VARCHAR(36) REFERENCES tipi_account(id),
+    negozio_id       VARCHAR(36) REFERENCES negozi(id),
+    is_superadmin    BOOLEAN NOT NULL DEFAULT FALSE,
+    primo_login      BOOLEAN NOT NULL DEFAULT TRUE,
+    creato_da        VARCHAR(36),
+    creato_il        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    ultimo_accesso   TIMESTAMP
+);
+
+-- MODIFICHE alle tabelle esistenti
+ALTER TABLE consegne ADD COLUMN negozio_id VARCHAR(36) REFERENCES negozi(id);
+ALTER TABLE consegne ADD COLUMN versione   INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE squadre  ADD COLUMN negozio_id VARCHAR(36) REFERENCES negozi(id);
+ALTER TABLE squadre  ADD COLUMN versione   INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE giornate ADD COLUMN negozio_id VARCHAR(36) REFERENCES negozi(id);
+ALTER TABLE giornate ADD COLUMN versione   INTEGER NOT NULL DEFAULT 1;
+```
+- **`giornate.squadra` resta una stringa (nome)** in questa iterazione. Il passaggio a `giornate.squadra_id` (FK verso `squadre`) è la **fase 6** (§11): tocca server, 5 file frontend, migrazione e schema, e si fa solo dopo che la V2 funziona.
+- Per il backend JSON la struttura dei record è la stessa (§8).
+- Le definizioni finali (vincoli `ON DELETE`, `NOT NULL` su `negozio_id` dopo la migrazione, indici su `negozio_id`) si fissano in fase 1 (§11, punti aperti).
+
 ### Retry e attesa DB
 `init_storage()` tenta la connessione al DB fino a 10 volte (3 secondi di pausa tra un tentativo e l'altro) per gestire il caso in cui il container DB non sia ancora pronto al momento dell'avvio dell'app.
 
@@ -254,24 +550,27 @@ I campi camelCase del frontend (`giornoConsegna`, `fasciaOraria`, ecc.) vengono 
 
 ## 7. Frontend
 
-Il frontend V1 è sostanzialmente invariato rispetto alla versione Windows, salvo le modifiche minime descritte in questa sezione (`api.js`: identificatore client; `render.js`: ordinamento sidebar).
+Il frontend V1 è sostanzialmente invariato rispetto alla versione Windows, salvo le modifiche minime descritte in questa sezione (`api.js`: identificatore client; `render.js`: ordinamento sidebar). La V2 🚧 riscrive il layer di comunicazione e aggiunge login e pannelli di amministrazione.
 
 ### Costante API
 ```javascript
-// store.js
-export const API = `http://${window.location.hostname}:8080/api`;
+// store.js — stato attuale su main
+export const API = `http://${window.location.hostname}:8742/api`;
 ```
-⚠️ La porta è cambiata da `8742` (Windows) a `8080` (Docker). Già aggiornata in `store.js`.
+⚠️ **Incongruenza nota su `main`:** questa documentazione indicava 8080 come "già aggiornata", ma nel codice di `store.js` c'è ancora `8742`. Funziona solo se la porta pubblicata (`APP_PORT`) è 8742.
+
+**Decisione V2 🚧 (da applicare in fase 3):** percorso relativo `export const API = '/api';` — stessa origine del server, nessuna porta hardcoded, valido con qualsiasi `APP_PORT` o reverse proxy.
 
 ### Identificatore client (`api.js`)
 ```javascript
 // api.js — generato una volta per sessione browser, salvato in sessionStorage
 const CLIENT_ID = generateClientId(); // via crypto.getRandomValues(), NON crypto.randomUUID()
 ```
-⚠️ **Non usare `crypto.randomUUID()`**: richiede un secure context (HTTPS o `localhost`) ed è **indisponibile** quando l'app è servita via HTTP semplice su IP LAN — lo scenario normale di questo progetto. `crypto.getRandomValues()` non ha questa limitazione ed è usato per generare un ID esadecimale a 16 byte. Inviato come header `X-Client-ID` su `fetchData`, `postData`, `pingServer` (non su `remoteLog`, non rilevante per il conteggio).
+⚠️ **Non usare `crypto.randomUUID()`**: richiede un secure context (HTTPS o `localhost`) ed è **indisponibile** quando l'app è servita via HTTP semplice su IP LAN — lo scenario normale di questo progetto. `crypto.getRandomValues()` non ha questa limitazione ed è usato per generare un ID esadecimale a 16 byte. In V1 è inviato come header `X-Client-ID` su `fetchData`, `postData`, `pingServer` (non su `remoteLog`). In V2 🚧 va inviato su **ogni** richiesta REST (nel wrapper `_fetch` di `api.js`).
 
 ### Stato globale (`store.js`)
 ```javascript
+// V1 (attuale)
 let db              = { consegne: [], giornate: [], squadre: [] };
 let currentView     = 'lista';
 let currentGiornataId    = null;
@@ -283,15 +582,30 @@ let pingFailCount        = 0;
 const PING_FAIL_THRESHOLD = 2;
 const SQ_COLORS = 8;
 ```
+**V2 🚧:** si aggiungono `currentUser` e `localTimestamps`; si rimuovono `isDirty` e `pingFailCount`; `PING_FAIL_THRESHOLD` diventa 1.
 
 ### Ciclo di vita dei dati
+**V1 (attuale)**
 1. Al caricamento: `loadData()` → GET `/api/data` → popola `db` → `renderAll()`
 2. Ogni 8 secondi: polling se `serverOnline && !isDirty`
 3. Ogni 2 secondi: ping → se 2 fallimenti → `showDisconnectOverlay()`
 4. Ogni modifica: `markDirty()` → 600ms debounce → `saveData()` → POST `/api/data`
 
+**V2 🚧**
+1. Al caricamento: si cerca il token in `sessionStorage`; se assente o scaduto (401) → overlay di login
+2. Login: `GET /api/auth/challenge` → calcolo Challenge-Response (`sha256.js`) → `POST /api/auth/login` → token + permessi in `sessionStorage`
+3. Se `must_change_password` → overlay di cambio password obbligatorio
+4. Superadmin → solo pannello admin (`modal-admin.js` caricato dinamicamente); altri utenti → app operativa, UI condizionata da `hasPermesso()`
+5. Ogni 8 secondi: `GET /api/stato` → si scaricano solo le categorie cambiate
+6. Ogni 2 secondi: ping → 1 fallimento → `showDisconnectOverlay()`
+7. Ogni modifica: chiamata REST immediata → la risposta contiene il db aggiornato → `applyServerResponse()`. In caso di 409 si mostra "modificata da un altro utente. Ricarica e riprova."
+8. 401 su qualunque chiamata → logout e ritorno al login
+
+**Token lato client:** `sessionStorage` (cancellato alla chiusura del browser), inviato con header `X-Session-Token`.
+
 ### Grafo dipendenze JS
 ```
+V1 (attuale)
 main.js
   ├── store.js          (no deps)
   ├── api.js → store
@@ -305,7 +619,28 @@ main.js
   ├── modal-select.js → store, sync, api, render, utils
   ├── squadre.js → store, sync, api, render, utils
   └── stampa.js → store, utils
+
+V2 🚧
+main.js
+  ├── store.js          (no deps)
+  ├── sha256.js         (no deps)
+  ├── permessi.js → store
+  ├── auth.js → sha256, store
+  ├── api.js → store, auth
+  ├── sync.js → api, store
+  ├── utils.js → store
+  ├── theme.js          (no deps)
+  ├── render.js → sync, utils, store, dragdrop, permessi
+  │     └── dragdrop.js → store, sync, api, permessi
+  ├── giornate.js → store, sync, api, render, utils, permessi
+  ├── modal-consegna.js → store, sync, api, render, utils
+  ├── modal-select.js → store, sync, api, render, utils
+  ├── modal-utenti.js → api, auth, utils, sha256, permessi
+  ├── modal-admin.js → api, permessi, utils, sha256  [caricato dinamicamente solo per il superadmin]
+  ├── squadre.js → store, sync, api, render, utils
+  └── stampa.js → store, utils
 ```
+Nessuna dipendenza circolare.
 
 ---
 
@@ -363,6 +698,48 @@ main.js
 ### Campo `_connectedClients`
 Aggiunto dal server nelle risposte HTTP. **Mai scritto su disco o nel DB.**
 
+### Campi e collezioni aggiunti in V2 🚧
+Valido per tutti i backend. **Gli ID V2 sono generati dal server** con prefisso (`c_` consegne, `g_` giornate, `sq_` squadre, `n_` negozi, `ta_` tipi account, `u_` utenti, es. `c_b2095b436467ec09`). Gli ID V1 esistenti vengono **conservati** dalla migrazione, non riscritti.
+
+**`consegne`, `giornate`, `squadre`:** ogni record guadagna due campi.
+```json
+{ "id": "c_abc123", "negozio_id": "n_abc123", "versione": 1, "...": "campi V1 invariati" }
+```
+`giornate.squadra` resta una stringa (nome) fino alla fase 6 (§11).
+
+**`negozi`**
+```json
+{ "id": "n_abc123", "nome": "Negozio principale", "creato_il": "2026-06-18T10:00:00" }
+```
+
+**`tipi_account`** (globali, condivisi da tutti i negozi)
+```json
+{
+  "id": "ta_abc123",
+  "nome": "Amministratore",
+  "permessi": ["consegne.leggi", "utenti.leggi", "utenti.crea", "tipi_account.leggi"],
+  "creato_il": "2026-06-18T10:00:00",
+  "modificato_il": "2026-06-18T10:00:00"
+}
+```
+
+**`utenti`**
+```json
+{
+  "id": "u_abc123",
+  "username": "mario.rossi",
+  "password_hash": "hex64chars (sha256(password))",
+  "tipo_account_id": "ta_xyz789",
+  "negozio_id": "n_abc123",
+  "is_superadmin": false,
+  "primo_login": false,
+  "creato_da": "u_superadmin",
+  "creato_il": "2026-06-18T10:00:00",
+  "ultimo_accesso": "2026-06-18T14:30:00"
+}
+```
+Il superadmin è `{"id": "u_superadmin", "username": "superadmin", "tipo_account_id": null, "negozio_id": null, "is_superadmin": true, ...}`.
+
 ---
 
 ## 9. Flusso operativo tipico
@@ -375,6 +752,13 @@ Giornate → seleziona o crea giornata → "Aggiungi consegna" → seleziona dal
 
 ### Rimuovere da una giornata
 Click ✕ sulla card → la consegna torna "in_attesa", `giornoConsegna` e `fasciaOraria` svuotati
+
+### Setup iniziale V2 🚧
+1. Primo avvio: login come `superadmin` / `admin` → cambio password obbligatorio
+2. Pannello superadmin → **Negozi** → crea il primo negozio
+3. **Tipi account** → crea un tipo (es. "Amministratore") scegliendo i permessi
+4. **Utenti** → crea un utente assegnandogli negozio e tipo account
+5. Logout; login con il nuovo utente → operatività sul proprio negozio
 
 ---
 
@@ -393,7 +777,7 @@ Click ✕ sulla card → la consegna torna "in_attesa", `giornoConsegna` e `fasc
 | File separati per JSON (non unico `dati.json`) | Scritture atomiche indipendenti per entità, preparazione V2 |
 | Schema DB nativo (non blob) | Leggibilità diretta nel DB, query possibili, preparazione V2 |
 | Campo `extra` JSONB/JSON | Absorbe campi futuri senza migration dello schema |
-| `squadra` come stringa in V1 | Retrocompatibilità; diventerà `squadra_id` in V2 |
+| `squadra` come stringa in V1 | Retrocompatibilità; diventerà `squadra_id` (fase 6 della V2, vedi §11) |
 | Healthcheck Python puro | Nessuna dipendenza da curl/wget nell'immagine |
 | Log HTTP agganciati al logger (`LOG_LEVEL`) | Log richieste utili in debug, silenziosi di default in produzione |
 | Contatore client per `X-Client-ID` (non IP) | In Docker più browser condividono lo stesso IP (NAT); l'IP da solo sottostima/sovrastima il conteggio |
@@ -404,8 +788,8 @@ Click ✕ sulla card → la consegna torna "in_attesa", `giornoConsegna` e `fasc
 | Decisione | Motivazione |
 |-----------|-------------|
 | Scrittura atomica (tmp + rename) | Protezione da corruzione a metà scrittura |
-| Lettura fresca prima di ogni scrittura | Previene sovrascritture con accesso quasi-contemporaneo |
-| 2 tentativi poi crash | Preferibile perdere l'ultima modifica che avere dati corrotti |
+| Lettura fresca prima di ogni scrittura | Previene sovrascritture con accesso quasi-contemporaneo (V1; in V2 sostituita dall'optimistic locking per record) |
+| 2 tentativi poi crash | Preferibile perdere l'ultima modifica che avere dati corrotti (V2: comportamento da rivalutare con lo storage per record, vedi §11) |
 | Ping HTTP (non ICMP) | ICMP bloccato dai firewall di default |
 | Cognome Nome (non Nome Cognome) | Richiesta esplicita del cliente — **non invertire mai** |
 | Stessa data permessa con squadre diverse | Richiesta esplicita per gestire squadre parallele |
@@ -414,206 +798,79 @@ Click ✕ sulla card → la consegna torna "in_attesa", `giornoConsegna` e `fasc
 | `articoli[]` invece di 3 campi singoli | Più prodotti per consegna, retrocompatibile |
 | `tipoConsegna` per-articolo | Consegne miste con tipi installazione diversi per articolo |
 
+### Autenticazione, permessi e multi-tenancy (V2) 🚧
+| Decisione | Motivazione |
+|-----------|-------------|
+| Challenge-Response SHA-256 | `crypto.subtle` non disponibile su HTTP su IP LAN |
+| `password_hash` = `sha256(password)` | Coerente con il Challenge-Response; limiti documentati in §5 |
+| Token in `sessionStorage` (non `localStorage`) | Auto-cancellato alla chiusura del browser |
+| Sessioni e challenge in memoria | Semplicità; implica istanza unica (§4) e logout al riavvio |
+| Superadmin senza operatività | Separazione netta: l'admin di sistema non tocca i dati aziendali |
+| Superadmin identificato da colonna `is_superadmin` | Esplicito e leggibile nel DB (id comunque fisso `u_superadmin`) |
+| Tipi account globali (non per negozio) | Semplicità di gestione; solo il superadmin li crea |
+| `tipi_account.gestisci` e `negozi.gestisci` solo superadmin | Non assegnabili ad altri account |
+| Dipendenze tra permessi come avvisi, senza auto-selezione | Più trasparente: chi configura deve essere consapevole |
+| Optimistic locking con `versione` | Protegge da scritture concorrenti; atomico nel layer di storage |
+| **Storage per singolo record su tutti i backend** | Un layer di astrazione con più DB perde utilità se si riscrive l'intera tabella a ogni salvataggio; su DB permette `UPDATE ... WHERE versione = ?` atomico e non rischia i dati degli altri negozi |
+| Utenti, negozi e tipi account dentro `storage.py` | Nessun dato fuori dal layer di storage; container `read_only`; stesso backend per tutto |
+| Polling via timestamp | Evita render inutili; scarica solo ciò che è cambiato |
+| Risposta delle scritture = db aggiornato del negozio | Il client è sempre in sync dopo ogni operazione propria |
+| Log 100% server-side | Non aggirabile dal client; auditabilità reale |
+| `modal-admin.js` caricato dinamicamente | Non caricato per utenti normali; separazione netta |
+| `migrate.py` con tutti e 3 i backend come sorgente e destinazione | Il cliente può cambiare backend; la migrazione V1→V2 non deve dipendere dal backend in uso |
+| `squadra_id` rimandato (fase 6) | Cambia server, 5 file frontend, schema e migrazione: farlo insieme al resto aumenta il rischio di bug |
+
+### Note per modifiche future (V2) 🚧
+- **Non usare `crypto.subtle`**: non disponibile su `http://IP:porta` da browser moderni
+- **Non cambiare lo schema** (campi, tabelle) senza aggiornare `storage.py` su **tutti e tre** i backend e `migrate.py`
+- **Non cambiare il significato di `password_hash`** (`sha256(password)`): richiederebbe di resettare tutte le password
+- **Non ripristinare `f_tipoProdotto` / `f_codiceProdotto` / `f_tipoConsegna` nel DOM**: non esistono più (tipo e codice sono per articolo)
+- **`expandedRowId`** viene resettato a `null` se la riga viene eliminata
+- L'ordine **Cognome Nome** è intenzionale e definitivo
+- I **negozi** si creano dal pannello superadmin: non modificare i dati a mano in produzione
+- Nuovo endpoint operativo: verificare token → permesso → `negozio_id` (ordine in §5), filtrare per negozio, loggare con categoria `[DATI]`
+
 ---
 
-## 11. Piano upgrade V2
+## 11. Stato di implementazione V2
 
-Questa sezione documenta il piano completo per il prossimo upgrade. **Non implementare nulla di questa sezione senza esplicita autorizzazione.**
+Questa sezione traccia l'avanzamento della V2 sul branch `v2-docker` (partito da `main`). **Non implementare una fase senza esplicita autorizzazione.** Il design (endpoint, auth, permessi, schema) è descritto nelle sezioni §5-§8; qui ci sono fasi, metodo e punti aperti.
 
-### Panoramica V2
-La V2 introduce autenticazione, permessi granulari, multi-tenancy (negozi), API REST complete e polling efficiente basato su timestamp.
+### Fasi
+| Fase | Contenuto | Stato |
+|------|-----------|-------|
+| 0 | Documentazione (`AGENTS.md`, `README.md`) | ✅ completata, in revisione |
+| 1 | `storage.py`: schema V2 e API per singolo record su json/mysql/postgres, con suite di test condivisa | ⬜ |
+| 2 | `server.py`: Challenge-Response, sessioni, endpoint REST, permessi, filtro `negozio_id`, `/api/stato`, creazione superadmin | ⬜ |
+| 3 | Frontend V2 (vedi metodo sotto) | ⬜ |
+| 4 | `migrate.py` | ⬜ |
+| 5 | Test integrato: migrazione → primo login superadmin → negozio → tipo account → utente → login → operatività, su tutti e 3 i backend | ⬜ |
+| 6 | `squadra_id` al posto del nome squadra nelle giornate (server, `render.js`, `giornate.js`, `stampa.js`, `utils.js`, `modal-consegna.js`, schema, migrazione) | ⬜ rimandata |
 
-### 11.1 Modifiche `server.py`
+Ogni fase è un commit separato (o gruppo di commit) rivisto prima di passare alla successiva.
 
-Aggiungere (senza riscrivere la struttura esistente):
-- Strutture in memoria: `sessions = {}`, `challenges = {}`, `category_timestamps = {}`
-- Thread daemon per cleanup sessioni/challenges scaduti (ogni 60s)
-- Metodo `_check_auth(required_permission)` nell'Handler
-- Tutti i nuovi endpoint REST (vedere tabella sotto)
-- Rimozione di `POST /api/data` e `GET /api/data` come endpoint unici
-- Rimozione di `POST /api/log`
-- `GET /api/ping` resta invariato (nessuna auth, usato dall'healthcheck)
+### Metodo e regole
+- **Non riscrivere a memoria il codice del branch `dev`:** si parte dai file di `dev` (`git show origin/dev:<file>`) e si adattano.
+- **Fase 2:** la logica auth/REST di `dev` si porta mantenendo i nomi di funzioni ed endpoint; cambia solo lo strato dati (da `_read_json`/`_write_json` a `storage.py`). Rimuovere ciò che `dev` aveva e Docker non vuole (tray, `server.lock`, file accanto al codice).
+- **Fase 3:** i file frontend modificati sia su `main` sia su `dev` (`api.js`, `render.js`, `utils.js`, `modal-consegna.js`, `stampa.js`, `components.css`) vanno uniti **con merge a tre vie file per file** (base `9da9f00`), non copiati. Interventi di `main` da conservare: `X-Client-ID` su ogni richiesta, sidebar giornate in ordine decrescente, nuovi tipi di installazione (`ins_incasso`, `ins_muro`, `ins_sbs`). Fix di `dev` da conservare: `a0c9bbb` (5 bug core), `552682a` (form inline per cambio password), `f05bf13` (timer toast), `6b2b0be` (pulizia codice morto), `b19ba3a` (modal utenti per admin). Applicare la decisione `API = '/api'` (§7).
+- **Fase 1:** ogni comportamento si verifica su tutti e tre i backend; un test non è valido se passa solo su JSON.
+- Dopo ogni fase: rilettura dei blocchi modificati, verifica di coerenza nomi funzioni/endpoint (§1.3) e aggiornamento di questa tabella.
 
-**Endpoint V2 completi:**
+### Requisiti di `migrate.py` (fase 4) 🚧
+- **Sorgente e destinazione**: ciascuno dei tre backend (json, mysql, postgres), in qualsiasi combinazione, selezionabili da configurazione/argomenti (interfaccia da definire).
+- Trasformazione V1 → V2: crea il negozio "Negozio principale"; aggiunge `negozio_id` e `versione: 1` a tutte le consegne, giornate e squadre; crea il superadmin (`is_superadmin = true`, password di default `admin` con hash pre-calcolato, `primo_login = true`); crea `tipi_account` vuoto. Gli ID V1 non vengono modificati; `giornate.squadra` resta stringa.
+- **Protezioni** (proposte): backup completo della sorgente prima di scrivere; blocco contro la doppia esecuzione (file flag nel volume o tabella `migrazioni`); sorgente mai modificata; verifica finale con conteggio record per collezione tra sorgente e destinazione.
+- Dopo la migrazione nessun utente oltre al superadmin esiste: vanno creati dal pannello (§9).
 
-| Metodo | Path | Permesso | Descrizione |
-|--------|------|----------|-------------|
-| GET | `/api/auth/challenge` | No auth | Genera challenge monouso |
-| POST | `/api/auth/login` | No auth | Login → token + permessi |
-| POST | `/api/auth/logout` | Token | Invalida sessione |
-| POST | `/api/auth/change-password` | Token | Cambia propria password |
-| GET | `/api/ping` | No auth | Healthcheck (invariato) |
-| GET | `/api/stato` | Token (no superadmin) | Timestamp per polling |
-| GET/POST | `/api/negozi` | superadmin | Lista/Crea negozi |
-| PUT/DELETE | `/api/negozi/:id` | superadmin | Modifica/Elimina negozio |
-| GET/POST | `/api/tipi-account` | `tipi_account.leggi` / superadmin | Lista/Crea tipi account |
-| PUT/DELETE | `/api/tipi-account/:id` | superadmin | Modifica/Elimina tipo account |
-| GET/POST | `/api/utenti` | `utenti.leggi` / `utenti.crea` | Lista/Crea utenti |
-| PUT | `/api/utenti/:id/password` | `utenti.modifica` | Cambia password utente |
-| PUT | `/api/utenti/:id/tipo` | `utenti.modifica` | Cambia tipo account utente |
-| DELETE | `/api/utenti/:id` | `utenti.elimina` | Elimina utente |
-| GET/POST | `/api/consegne` | `consegne.leggi` / `consegne.scrivi` | Lista/Crea |
-| PUT/DELETE | `/api/consegne/:id` | `consegne.scrivi` / `consegne.elimina` | Modifica/Elimina |
-| GET/POST | `/api/giornate` | `giornate.leggi` / `giornate.crea` | Lista/Crea |
-| DELETE | `/api/giornate/:id` | `giornate.elimina` | Elimina |
-| POST | `/api/giornate/:id/assegna` | `giornate.assegna` | Aggiunge consegne |
-| DELETE | `/api/giornate/:id/assegna/:cid` | `giornate.assegna` | Rimuove consegna |
-| PUT | `/api/giornate/:id/riordina` | `giornate.riordina` | Riordina consegne |
-| PUT | `/api/giornate/:id/consegne/:cid/completa` | `giornate.segna_completata` | Segna completata |
-| GET/POST | `/api/squadre` | `squadre.leggi` / `squadre.gestisci` | Lista/Crea |
-| PUT/DELETE | `/api/squadre/:id` | `squadre.gestisci` | Modifica/Elimina |
-
-### 11.2 Modifiche `storage.py`
-
-Schema DB ampliato per V2. Le tabelle V1 (`consegne`, `squadre`, `giornate`, `giornata_consegne`) vengono estese, non sostituite:
-
-```sql
--- NUOVE tabelle
-CREATE TABLE negozi (
-    id        VARCHAR(36) PRIMARY KEY,
-    nome      VARCHAR(255) NOT NULL,
-    creato_il TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE tipi_account (
-    id        VARCHAR(36) PRIMARY KEY,
-    nome      VARCHAR(255) NOT NULL UNIQUE,
-    permessi  TEXT NOT NULL,   -- JSON array: '["consegne.leggi","stampa.pdf"]'
-    creato_il TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE utenti (
-    id               VARCHAR(36) PRIMARY KEY,
-    username         VARCHAR(150) NOT NULL UNIQUE,
-    password_hash    VARCHAR(64) NOT NULL,   -- sha256(sha256(password))
-    tipo_account_id  VARCHAR(36) REFERENCES tipi_account(id) ON DELETE SET NULL,
-    negozio_id       VARCHAR(36) REFERENCES negozi(id) ON DELETE SET NULL,
-    is_superadmin    BOOLEAN NOT NULL DEFAULT FALSE,
-    primo_login      BOOLEAN NOT NULL DEFAULT TRUE,
-    creato_da        VARCHAR(36),
-    creato_il        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    ultimo_accesso   TIMESTAMP
-);
-
--- MODIFICHE alle tabelle esistenti
-ALTER TABLE consegne ADD COLUMN negozio_id VARCHAR(36) REFERENCES negozi(id);
-ALTER TABLE consegne ADD COLUMN versione INTEGER NOT NULL DEFAULT 1;
-ALTER TABLE squadre  ADD COLUMN negozio_id VARCHAR(36) REFERENCES negozi(id);
-ALTER TABLE squadre  ADD COLUMN versione INTEGER NOT NULL DEFAULT 1;
--- squadre.squadra_id (FK) sostituisce squadre.squadra (stringa) in giornate
-ALTER TABLE giornate ADD COLUMN negozio_id VARCHAR(36) REFERENCES negozi(id);
-ALTER TABLE giornate ADD COLUMN squadra_id VARCHAR(36) REFERENCES squadre(id);
-ALTER TABLE giornate ADD COLUMN versione INTEGER NOT NULL DEFAULT 1;
--- giornate.squadra (stringa) va rimossa dopo migrazione
-```
-
-⚠️ Per il backend JSON in V2, `squadra_id` (non il nome stringa) viene usato nelle giornate, coerentemente con lo schema DB.
-
-### 11.3 Nuovo `migrate.py`
-
-Script one-shot per la migrazione V1 → V2. Deve:
-1. Verificare il file flag `migrazione_v2.done` (o tabella `migrazioni` per DB) — bloccarsi se già eseguito
-2. Fare backup completo di tutti i file/tabelle
-3. Creare negozio "Negozio principale"
-4. Aggiungere `negozio_id` e `versione: 1` a tutte le entità
-5. Convertire `giornate.squadra` (stringa) → `giornate.squadra_id` (FK)
-6. Creare superadmin con password di default `admin` (hash pre-calcolato)
-7. Creare `tipi_account` vuoto
-8. Aggiornare `utenti` (se esistono): rimuovere `ruolo`, aggiungere `tipo_account_id: null` e `negozio_id`
-9. Scrivere il file flag
-
-### 11.4 File frontend nuovi
-
-| File | Contenuto |
-|------|-----------|
-| `js/sha256.js` | SHA-256 puro JS (no `crypto.subtle` — non disponibile su HTTP su IP LAN) |
-| `js/auth.js` | Login overlay, challenge-response, sessionStorage, logout, cambio password |
-| `js/permessi.js` | Lista permessi, dipendenze tra permessi, `hasPermesso(id)` |
-| `js/admin-superadmin.js` | Pannello superadmin (caricato dinamicamente solo per superadmin) |
-| `js/admin-utenti.js` | Pannello gestione utenti (per account con permessi `utenti.*`) |
-
-### 11.5 File frontend modificati
-
-| File | Tipo modifica |
-|------|---------------|
-| `js/store.js` | Aggiunta `currentUser`, `localTimestamps`; rimozione `isDirty`, `pingFailCount`; soglia ping → 1 |
-| `js/api.js` | Riscrittura: layer HTTP con header `X-Session-Token` e intercettazione 401 |
-| `js/sync.js` | Riscrittura: polling basato su timestamp, `applyServerResponse`, rimozione `markDirty`/`saveData` |
-| `js/main.js` | Modifica: init condizionale (verifica token → superadmin vs utente normale) |
-| `js/squadre.js` | Chirurgica: operazioni → REST, rimozione `remoteLog` e `markDirty` |
-| `js/giornate.js` | Chirurgica: idem |
-| `js/render.js` | Modifica: `hasPermesso()` per mostrare/nascondere UI, `squadra_id` invece di nome |
-| `js/modal-consegna.js` | Chirurgica: operazioni → REST |
-| `js/modal-select.js` | Chirurgica: operazioni → REST |
-| `index.html` | Aggiunta overlay login, overlay cambio password obbligatorio, sezione pannello utenti |
-
-### 11.6 Autenticazione V2 — dettagli
-
-**Challenge-Response con SHA-256:**
-1. `GET /api/auth/challenge` → server genera token casuale (TTL 60s), lo restituisce
-2. Client calcola: `h1 = sha256(password)`, poi `response = sha256(h1 + challenge)`
-3. `POST /api/auth/login` con `{username, challenge, response}`
-4. Server confronta con `sha256(h1_memorizzato + challenge)` a tempo costante
-5. Challenge invalidato dopo l'uso (protezione replay)
-
-**Sessioni (solo in memoria):**
-```
-{ user_id, username, negozio_id, permessi[], is_superadmin, last_seen, expires, must_change_password }
-```
-- TTL: 2 ore dall'ultimo accesso
-- Invalida immediatamente le sessioni se cambia `tipo_account_id` dell'utente
-
-**Token lato client:** salvato in `sessionStorage` (cancellato alla chiusura del browser). Header: `X-Session-Token`.
-
-### 11.7 Permessi V2
-
-| Gruppo | Permessi |
-|--------|----------|
-| Consegne | `consegne.leggi`, `consegne.scrivi`, `consegne.elimina` |
-| Giornate | `giornate.leggi`, `giornate.crea`, `giornate.elimina`, `giornate.assegna`, `giornate.riordina`, `giornate.segna_completata` |
-| Squadre | `squadre.leggi`, `squadre.gestisci` |
-| Stampa | `stampa.pdf` |
-| Tipi account | `tipi_account.leggi` |
-| Utenti | `utenti.leggi`, `utenti.crea`, `utenti.modifica`, `utenti.elimina` |
-
-Riservati al superadmin (non assegnabili): `tipi_account.gestisci`, `negozi.gestisci`.
-
-**Verifica backend nell'ordine:**
-1. Token valido → altrimenti 401
-2. Se `is_superadmin`: accesso garantito solo agli endpoint admin, 403 su endpoint operativi
-3. Permesso specifico presente in `session.permessi` → altrimenti 403
-4. `negozio_id` della risorsa coincide con `session.negozio_id` → altrimenti 403
-
-### 11.8 Regole rigide V2 (server-side, non aggirabili)
-
-- Il superadmin non è eliminabile né modificabile da altri
-- Un utente con `tipo_account_id: null` non può fare login (escluso superadmin)
-- Un tipo account non è eliminabile se ha utenti associati
-- Un negozio non è eliminabile se ha utenti associati
-- Il cambio `tipo_account_id` invalida immediatamente tutte le sessioni attive dell'utente
-- Il superadmin riceve 403 su tutti gli endpoint operativi
-- Il server filtra sempre per `negozio_id` su tutti gli endpoint operativi
-- Un utente non può eliminare se stesso
-
-### 11.9 Ordine consigliato di implementazione V2
-
-1. `migrate.py` — eseguire subito per struttura dati corretta
-2. Backend: nuovi file dati e I/O (negozi, tipi_account, utenti aggiornato)
-3. Backend: SHA-256 e sistema Challenge-Response (`/api/auth/*`)
-4. Backend: sessioni e verifica token (middleware riusabile)
-5. Backend: timestamp e `/api/stato`
-6. Backend: endpoint REST operativi (consegne, giornate, squadre) con permessi e filtro negozio
-7. Backend: endpoint admin (negozi, tipi account, utenti)
-8. Frontend: `js/sha256.js`
-9. Frontend: `js/auth.js` (login, logout, cambio password, sessionStorage)
-10. Frontend: layer HTTP (`js/api.js`) — header auth, intercettazione 401
-11. Frontend: `js/store.js` — aggiungi `currentUser`, `localTimestamps`; rimuovi `isDirty`
-12. Frontend: `js/sync.js` — polling timestamp, `applyServerResponse`
-13. Frontend: `js/permessi.js` — `hasPermesso()`
-14. Frontend: `js/main.js` — init condizionale
-15. Frontend: `js/admin-superadmin.js` (caricato dinamicamente)
-16. Frontend: `js/admin-utenti.js`
-17. Test integrato: migrazione → primo login superadmin → creazione negozio → tipo account → utente → login → operatività
+### Punti aperti (da decidere prima o durante la fase indicata)
+| # | Punto | Fase |
+|---|-------|------|
+| 1 | Firma definitiva dell'API di `storage.py` (§6 è una bozza) | 1 |
+| 2 | Vincoli SQL: `ON DELETE` (restrizione vs `SET NULL`) coerente con la regola "non eliminabile se ha utenti"; `NOT NULL` su `negozio_id` dopo la migrazione; indici su `negozio_id` | 1 |
+| 3 | Comportamento del server su `StorageError`: crash (V1: "2 tentativi poi crash") oppure risposta 500 mantenendo il server attivo | 1-2 |
+| 4 | Timestamp di polling per negozio invece che globali | 2 |
+| 5 | `migrate.py`: migrazione sullo stesso backend (in-place o su nuova destinazione), eventuali dati dell'era `dev` da preservare, rapporto con `import_data.py` (resta separato o viene assorbito) | 4 |
+| 6 | Ambiente di sviluppo Docker isolato dalla produzione (es. `compose.dev.yaml` con progetto, volume e porta separati) | prima della fase 1 |
 
 ---
 
