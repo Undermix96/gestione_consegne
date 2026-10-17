@@ -15,16 +15,24 @@ Variabili d'ambiente:
   DB_USER      utente del database
   DB_PASSWORD  password del database
 
-Interfaccia pubblica:
+Interfaccia pubblica V1 (legacy: import_data.py e sorgente di migrate.py):
   init_storage()          — chiamata una volta all'avvio
   read_data()             — restituisce dict {consegne, giornate, squadre}
   write_data(data)        — salva il dict completo
   make_backup()           — snapshot JSON (solo backend json, no-op per DB)
+
+Interfaccia pubblica V2 (accesso per singolo record) — vedi sezione "V2" in fondo:
+  init_storage_v2(), list_records(), get_record(), insert_record(), insert_records(),
+  update_record(), delete_record(), giornata_assegna/_rimuovi/_riordina(),
+  get_meta(), set_meta(), backup_now()
+  Eccezioni: StorageError, ConflictError, NotFoundError, DuplicateError, IntegrityError
 """
 
+import copy
 import json
 import logging
 import os
+import threading
 import time
 import glob
 from datetime import datetime
@@ -35,6 +43,7 @@ BACKEND       = os.environ.get("DB_BACKEND", "json").lower()
 DATA_DIR      = os.environ.get("DATA_DIR", "/data")
 WRITE_RETRIES = 2
 MAX_BACKUPS   = 20
+BACKUP_MIN_INTERVAL = 300   # V2 (backend json): al massimo 1 snapshot ogni 5 minuti
 
 # ─── INIT ────────────────────────────────────────────────────────────────────
 
@@ -557,3 +566,507 @@ def _pg_write(data):
     finally:
         cur.close()
         conn.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# V2 — ACCESSO PER SINGOLO RECORD
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Principi (vedi AGENTS.md §6):
+#  - ogni operazione agisce su un solo record (nessuna riscrittura dell'intera tabella)
+#  - optimistic locking atomico nel layer di storage (`versione`)
+#  - stessa semantica su json / mysql / postgres: la validazione comune sta qui,
+#    i backend implementano solo la persistenza (e i vincoli equivalenti)
+#  - un valore None NON viene memorizzato: inserire/aggiornare un campo con None
+#    significa "campo assente" (identico su tutti i backend, SQL NULL ≡ chiave mancante)
+#  - `id` e `negozio_id` sono forniti dal chiamante; `versione` è gestita dallo storage
+#
+# Le funzioni V1 (read_data/write_data/...) restano invariate per import_data.py
+# e come sorgente di migrate.py.
+
+class StorageError(Exception):
+    """Errore di persistenza (I/O, DB non raggiungibile, dati illeggibili)."""
+
+class ConflictError(StorageError):
+    """Optimistic locking: la `versione` attesa non coincide con quella salvata (→ 409)."""
+
+class NotFoundError(StorageError):
+    """Record o riferimento inesistente (→ 404)."""
+
+class DuplicateError(StorageError):
+    """Violazione di unicità (id già presente, username/nome duplicato)."""
+
+class IntegrityError(StorageError):
+    """Violazione di integrità referenziale (riferimento inesistente o record ancora referenziato)."""
+
+
+# Specifica dichiarativa delle collezioni. Una sola fonte di verità per tutti i backend.
+#   versioned : ha il campo `versione` (gestito dallo storage)
+#   tenant    : appartiene a un negozio (`negozio_id` obbligatorio e immutabile)
+#   required  : campi obbligatori (non None) all'inserimento e dopo ogni update
+#   defaults  : valori applicati all'inserimento se il campo manca
+#   unique    : campi con vincolo di unicità
+#   ci        : sottoinsieme dei campi confrontati senza distinguere maiuscole/minuscole
+#               (valido per unicità E per i filtri)
+#   fks       : {campo: collezione_referenziata}; None è ammesso per i campi non `tenant`
+#   reserved  : campi gestiti solo da operazioni dedicate (non modificabili con update_record)
+_COLL = {
+    "consegne":     dict(versioned=True, tenant=True, defaults={"stato": "in_attesa"}),
+    "giornate":     dict(versioned=True, tenant=True, required=("data",),
+                         reserved=("consegneIds",)),
+    "squadre":      dict(versioned=True, tenant=True, required=("nome",),
+                         defaults={"colorIdx": 0}),
+    "negozi":       dict(required=("nome",)),
+    "tipi_account": dict(required=("nome", "permessi"), unique=("nome",)),
+    "utenti":       dict(required=("username", "password_hash"),
+                         unique=("username",), ci=("username",),
+                         defaults={"is_superadmin": False, "primo_login": True},
+                         fks={"negozio_id": "negozi", "tipo_account_id": "tipi_account"}),
+}
+for _n, _s in _COLL.items():
+    _s.setdefault("versioned", False)
+    _s.setdefault("tenant", False)
+    _s.setdefault("required", ())
+    _s.setdefault("defaults", {})
+    _s.setdefault("unique", ())
+    _s.setdefault("ci", ())
+    _s.setdefault("fks", {})
+    _s.setdefault("reserved", ())
+    if _s["tenant"]:
+        _s["fks"] = {**_s["fks"], "negozio_id": "negozi"}
+
+# Chi referenzia cosa (comportamento RESTRICT: non si elimina un record ancora referenziato)
+_REFERRERS = {
+    "negozi":       [("consegne", "negozio_id"), ("giornate", "negozio_id"),
+                     ("squadre", "negozio_id"), ("utenti", "negozio_id")],
+    "tipi_account": [("utenti", "tipo_account_id")],
+}
+
+def _spec(collection):
+    try:
+        return _COLL[collection]
+    except (KeyError, TypeError):
+        raise ValueError(f"Collezione sconosciuta: {collection!r}. Valide: {', '.join(_COLL)}")
+
+def _same(spec, field, a, b):
+    """Uguaglianza di valori per un campo (case-insensitive se il campo è in `ci`)."""
+    if field in spec["ci"] and isinstance(a, str) and isinstance(b, str):
+        return a.casefold() == b.casefold()
+    return a == b
+
+def _norm_insert(collection, record):
+    """Validazione e normalizzazione comuni a tutti i backend. Ritorna una copia pulita."""
+    spec = _spec(collection)
+    if not isinstance(record, dict):
+        raise ValueError("record deve essere un dict")
+    rec = {k: copy.deepcopy(v) for k, v in record.items() if v is not None}
+    rid = rec.get("id")
+    if not isinstance(rid, str) or not rid:
+        raise ValueError("record['id'] obbligatorio (stringa non vuota)")
+    for k, v in spec["defaults"].items():
+        rec.setdefault(k, v)
+    if collection == "giornate":
+        rec.pop("consegneCompletate", None)   # V1: flag mai usato da frontend/server
+        ids = rec.get("consegneIds", [])
+        if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids) or len(set(ids)) != len(ids):
+            raise ValueError("consegneIds deve essere una lista di id distinti")
+        rec["consegneIds"] = list(ids)
+    if spec["versioned"]:
+        rec["versione"] = 1
+    for f in spec["required"]:
+        if rec.get(f) is None:
+            raise ValueError(f"Campo obbligatorio mancante: {f}")
+    if spec["tenant"] and not rec.get("negozio_id"):
+        raise ValueError("negozio_id obbligatorio")
+    return rec
+
+def _norm_changes(collection, changes):
+    spec = _spec(collection)
+    if not isinstance(changes, dict) or not changes:
+        raise ValueError("changes deve essere un dict non vuoto")
+    forbidden = {"id", "versione"} | set(spec["reserved"])
+    if spec["tenant"]:
+        forbidden.add("negozio_id")
+    bad = forbidden & set(changes)
+    if bad:
+        raise ValueError(f"Campi non modificabili con update_record: {sorted(bad)}")
+    if collection == "giornate" and "consegneCompletate" in changes:
+        raise ValueError("consegneCompletate non è più supportato")
+    return {k: copy.deepcopy(v) for k, v in changes.items()}
+
+def _norm_filters(collection, filters):
+    _spec(collection)
+    if filters is None:
+        return {}
+    if not isinstance(filters, dict):
+        raise ValueError("filters deve essere un dict {campo: valore}")
+    return dict(filters)
+
+
+class _JsonV2:
+    """Backend JSON V2: un file `<collezione>.json` (array di record) per collezione + meta.json.
+
+    Lock unico (RLock) per tutte le operazioni: il carico è minimo e un solo lock esclude
+    i deadlock tra collezioni. Scrittura atomica (.tmp + fsync + os.replace). Un file
+    illeggibile solleva StorageError: non si restituisce mai un default che verrebbe
+    poi riscritto sopra i dati.
+    """
+
+    def __init__(self):
+        self._lock = threading.RLock()
+        self._last_backup = 0.0
+        os.makedirs(self._dir(), exist_ok=True)
+        os.makedirs(os.path.join(self._dir(), "backup"), exist_ok=True)
+        for name in _COLL:
+            if not os.path.exists(self._path(name)):
+                self._write_file(self._path(name), [])
+                log.info(f"[STORAGE] Creato {self._path(name)} (vuoto)")
+        if not os.path.exists(self._meta_path()):
+            self._write_file(self._meta_path(), {})
+
+    # ── file ────────────────────────────────────────────────────────────────
+    def _dir(self):              return DATA_DIR            # letto a ogni uso (testabile)
+    def _path(self, name):       return os.path.join(self._dir(), f"{name}.json")
+    def _meta_path(self):        return os.path.join(self._dir(), "meta.json")
+
+    def _read_file(self, path, default, kind):
+        last = None
+        for attempt in range(WRITE_RETRIES):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if not isinstance(data, kind):
+                    raise ValueError(f"contenuto inatteso ({type(data).__name__})")
+                return data
+            except FileNotFoundError:
+                return default
+            except Exception as e:
+                last = e
+                log.error(f"[STORAGE] Errore lettura {path} (tentativo {attempt+1}): {e}")
+                if attempt < WRITE_RETRIES - 1:
+                    time.sleep(0.3)
+        raise StorageError(f"Impossibile leggere {path}: {last}")
+
+    def _write_file(self, path, data):
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+
+    def _read(self, name):
+        return self._read_file(self._path(name), [], list)
+
+    def _write(self, name, rows):
+        self._write_with_retry(self._path(name), rows)
+
+    def _write_with_retry(self, path, data):
+        last = None
+        for attempt in range(WRITE_RETRIES):
+            try:
+                self._write_file(path, data)
+                return
+            except Exception as e:
+                last = e
+                log.error(f"[STORAGE] Errore scrittura {path} (tentativo {attempt+1}): {e}")
+                if attempt < WRITE_RETRIES - 1:
+                    time.sleep(0.3)
+        raise StorageError(f"Scrittura fallita su {path}: {last}")
+
+    # ── backup ──────────────────────────────────────────────────────────────
+    def backup_now(self):
+        """Snapshot di tutte le collezioni e di meta.json. Non critico: logga e prosegue."""
+        try:
+            bdir = os.path.join(self._dir(), "backup")
+            os.makedirs(bdir, exist_ok=True)
+            ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            for key in list(_COLL) + ["meta"]:
+                src = os.path.join(self._dir(), f"{key}.json")
+                if not os.path.exists(src):
+                    continue
+                with open(src, "r", encoding="utf-8") as f:
+                    content = f.read()
+                with open(os.path.join(bdir, f"{key}.{ts}.json"), "w", encoding="utf-8") as f:
+                    f.write(content)
+                old = sorted(glob.glob(os.path.join(bdir, f"{key}.*.json")))
+                while len(old) > MAX_BACKUPS:
+                    os.remove(old.pop(0))
+            self._last_backup = time.time()
+            return True
+        except Exception as e:
+            log.warning(f"[STORAGE] Backup fallito (non critico): {e}")
+            return False
+
+    def _maybe_backup(self):
+        if time.time() - self._last_backup >= BACKUP_MIN_INTERVAL:
+            self.backup_now()
+
+    # ── controlli di integrità ──────────────────────────────────────────────
+    def _check_fks(self, name, rec, only=None):
+        for field, target in _spec(name)["fks"].items():
+            if only is not None and field not in only:
+                continue
+            val = rec.get(field)
+            if val is None:
+                continue
+            if not any(r.get("id") == val for r in self._read(target)):
+                raise IntegrityError(f"{name}.{field}: {target} '{val}' inesistente")
+
+    def _check_unique(self, name, rows, rec, exclude_id=None):
+        spec = _spec(name)
+        for f in spec["unique"]:
+            val = rec.get(f)
+            if val is None:
+                continue
+            for r in rows:
+                if r.get("id") != exclude_id and _same(spec, f, r.get(f), val):
+                    raise DuplicateError(f"{name}.{f}: valore già presente ('{val}')")
+
+    def _check_required(self, name, rec):
+        for f in _spec(name)["required"]:
+            if rec.get(f) is None:
+                raise ValueError(f"Campo obbligatorio mancante: {f}")
+
+    # ── lettura ─────────────────────────────────────────────────────────────
+    def list(self, name, filters):
+        spec = _spec(name)
+        with self._lock:
+            rows = self._read(name)
+        return [r for r in rows
+                if all(_same(spec, k, r.get(k), v) for k, v in filters.items())]
+
+    def get(self, name, rid):
+        with self._lock:
+            for r in self._read(name):
+                if r.get("id") == rid:
+                    return r
+        return None
+
+    # ── scrittura ───────────────────────────────────────────────────────────
+    def insert_many(self, name, recs):
+        with self._lock:
+            rows = self._read(name)
+            seen = {r.get("id") for r in rows}
+            staged = list(rows)
+            for rec in recs:
+                if rec["id"] in seen:
+                    raise DuplicateError(f"{name}: id '{rec['id']}' già presente")
+                self._check_fks(name, rec)
+                self._check_unique(name, staged, rec)
+                if name == "giornate":
+                    self._check_giornata_members(rec, rec["consegneIds"])
+                seen.add(rec["id"])
+                staged.append(rec)
+            self._maybe_backup()
+            self._write(name, staged)
+        return [copy.deepcopy(r) for r in recs]
+
+    def update(self, name, rid, changes, expected_versione):
+        spec = _spec(name)
+        with self._lock:
+            rows = self._read(name)
+            idx = next((i for i, r in enumerate(rows) if r.get("id") == rid), None)
+            if idx is None:
+                raise NotFoundError(f"{name}: id '{rid}' inesistente")
+            cur = rows[idx]
+            if expected_versione is not None and cur.get("versione") != expected_versione:
+                raise ConflictError(
+                    f"{name} '{rid}': versione attesa {expected_versione}, salvata {cur.get('versione')}")
+            new = dict(cur)
+            for k, v in changes.items():
+                if v is None:
+                    new.pop(k, None)
+                else:
+                    new[k] = v
+            self._check_required(name, new)
+            self._check_fks(name, new, only=set(changes))
+            self._check_unique(name, rows, new, exclude_id=rid)
+            if spec["versioned"]:
+                new["versione"] = cur.get("versione", 1) + 1
+            rows[idx] = new
+            self._maybe_backup()
+            self._write(name, rows)
+            return copy.deepcopy(new)
+
+    def delete(self, name, rid):
+        with self._lock:
+            rows = self._read(name)
+            idx = next((i for i, r in enumerate(rows) if r.get("id") == rid), None)
+            if idx is None:
+                return False
+            for rname, field in _REFERRERS.get(name, []):
+                if any(r.get(field) == rid for r in self._read(rname)):
+                    raise IntegrityError(f"{name} '{rid}' è ancora referenziato da {rname}.{field}")
+            self._maybe_backup()
+            if name == "consegne":
+                # Equivalente di ON DELETE CASCADE sul collegamento giornata↔consegna.
+                # Si scrivono prima le giornate: se si interrompe qui resta una consegna
+                # non assegnata (recuperabile), mai un riferimento orfano.
+                giornate = self._read("giornate")
+                changed = False
+                for g in giornate:
+                    if rid in g.get("consegneIds", []):
+                        g["consegneIds"] = [c for c in g["consegneIds"] if c != rid]
+                        changed = True
+                if changed:
+                    self._write("giornate", giornate)
+            del rows[idx]
+            self._write(name, rows)
+            return True
+
+    # ── giornate ↔ consegne ─────────────────────────────────────────────────
+    def _check_giornata_members(self, giornata, consegna_ids):
+        if not consegna_ids:
+            return
+        consegne = {r["id"]: r for r in self._read("consegne")}
+        for cid in consegna_ids:
+            c = consegne.get(cid)
+            if c is None:
+                raise NotFoundError(f"consegna '{cid}' inesistente")
+            if c.get("negozio_id") != giornata.get("negozio_id"):
+                raise ValueError(f"consegna '{cid}' appartiene a un altro negozio")
+
+    def _giornata_op(self, gid, fn):
+        with self._lock:
+            rows = self._read("giornate")
+            idx = next((i for i, r in enumerate(rows) if r.get("id") == gid), None)
+            if idx is None:
+                raise NotFoundError(f"giornate: id '{gid}' inesistente")
+            g = dict(rows[idx])
+            g["consegneIds"] = list(g.get("consegneIds", []))
+            fn(g)
+            rows[idx] = g
+            self._maybe_backup()
+            self._write("giornate", rows)
+            return copy.deepcopy(g)
+
+    def giornata_assegna(self, gid, consegna_ids):
+        def op(g):
+            self._check_giornata_members(g, consegna_ids)
+            for cid in consegna_ids:
+                if cid not in g["consegneIds"]:
+                    g["consegneIds"].append(cid)
+        return self._giornata_op(gid, op)
+
+    def giornata_rimuovi(self, gid, consegna_id):
+        def op(g):
+            g["consegneIds"] = [c for c in g["consegneIds"] if c != consegna_id]
+        return self._giornata_op(gid, op)
+
+    def giornata_riordina(self, gid, ordered_ids):
+        def op(g):
+            if len(ordered_ids) != len(set(ordered_ids)) or set(ordered_ids) != set(g["consegneIds"]):
+                raise ValueError("riordina richiede una permutazione esatta delle consegne della giornata")
+            g["consegneIds"] = list(ordered_ids)
+        return self._giornata_op(gid, op)
+
+    # ── meta ────────────────────────────────────────────────────────────────
+    def get_meta(self, key, default):
+        with self._lock:
+            return self._read_file(self._meta_path(), {}, dict).get(key, default)
+
+    def set_meta(self, key, value):
+        with self._lock:
+            meta = self._read_file(self._meta_path(), {}, dict)
+            meta[key] = value
+            self._write_with_retry(self._meta_path(), meta)
+
+    # ── solo test ───────────────────────────────────────────────────────────
+    def reset_for_tests(self):
+        with self._lock:
+            for name in _COLL:
+                self._write_file(self._path(name), [])
+            self._write_file(self._meta_path(), {})
+            self._last_backup = 0.0
+
+
+# ─── API PUBBLICA V2 ─────────────────────────────────────────────────────────
+
+_v2 = None
+
+def init_storage_v2():
+    """Inizializza il backend V2 (da chiamare una volta all'avvio; il server V2 usa questa
+    al posto di init_storage()). Marcatore di schema e rifiuto di dati V1: passo 1d."""
+    global _v2
+    if BACKEND == "json":
+        _v2 = _JsonV2()
+    elif BACKEND in ("mysql", "postgres"):
+        raise NotImplementedError(f"Backend V2 '{BACKEND}' non ancora implementato (passi 1b/1c)")
+    else:
+        raise ValueError(f"DB_BACKEND non valido: '{BACKEND}'. Valori accettati: json, mysql, postgres")
+    log.info(f"[STORAGE] Backend V2 attivo: {BACKEND}")
+
+def _be():
+    if _v2 is None:
+        raise StorageError("Storage V2 non inizializzato: chiamare init_storage_v2()")
+    return _v2
+
+def list_records(collection, filters=None):
+    """Lista dei record, in ordine di inserimento. `filters`: uguaglianza campo→valore
+    (case-insensitive per i campi `ci`, es. utenti.username)."""
+    return _be().list(collection, _norm_filters(collection, filters))
+
+def get_record(collection, rid):
+    """Il record con quell'id, oppure None."""
+    _spec(collection)
+    return _be().get(collection, rid)
+
+def insert_record(collection, record):
+    """Inserisce un record (con `id` fornito). Imposta versione=1 dove prevista.
+    Raises: DuplicateError, IntegrityError, ValueError."""
+    return _be().insert_many(collection, [_norm_insert(collection, record)])[0]
+
+def insert_records(collection, records):
+    """Inserimento di più record di una collezione in un'unica operazione tutto-o-niente."""
+    recs = [_norm_insert(collection, r) for r in records]
+    if not recs:
+        return []
+    return _be().insert_many(collection, recs)
+
+def update_record(collection, rid, changes, expected_versione=None):
+    """Aggiorna (merge) i campi indicati. Un valore None RIMUOVE il campo.
+    Se `expected_versione` è dato e non coincide → ConflictError. Incrementa `versione`.
+    Raises: NotFoundError, ConflictError, DuplicateError, IntegrityError, ValueError."""
+    return _be().update(collection, rid, _norm_changes(collection, changes), expected_versione)
+
+def delete_record(collection, rid):
+    """Elimina un record. True se eliminato, False se non esisteva.
+    consegne: viene tolta da tutte le giornate. negozi/tipi_account ancora referenziati → IntegrityError."""
+    _spec(collection)
+    return _be().delete(collection, rid)
+
+def giornata_assegna(giornata_id, consegna_ids):
+    """Aggiunge consegne in coda alla giornata (idempotente). NON modifica `versione`.
+    Raises: NotFoundError (giornata/consegna), ValueError (consegna di un altro negozio)."""
+    if not isinstance(consegna_ids, list) or not all(isinstance(c, str) for c in consegna_ids):
+        raise ValueError("consegna_ids deve essere una lista di id")
+    return _be().giornata_assegna(giornata_id, consegna_ids)
+
+def giornata_rimuovi(giornata_id, consegna_id):
+    """Toglie la consegna dalla giornata (nessun errore se non c'era). NON modifica `versione`."""
+    return _be().giornata_rimuovi(giornata_id, consegna_id)
+
+def giornata_riordina(giornata_id, ordered_ids):
+    """Imposta l'ordine delle consegne; deve essere una permutazione esatta. NON modifica `versione`."""
+    if not isinstance(ordered_ids, list):
+        raise ValueError("ordered_ids deve essere una lista")
+    return _be().giornata_riordina(giornata_id, ordered_ids)
+
+def get_meta(key, default=None):
+    """Valore di metadati (es. schema_version, flag migrazione)."""
+    return _be().get_meta(key, default)
+
+def set_meta(key, value):
+    _be().set_meta(key, value)
+
+def backup_now():
+    """Snapshot immediato (backend json); no-op per i backend DB. Usato prima di una migrazione."""
+    be = _be()
+    return be.backup_now() if hasattr(be, "backup_now") else True
+
+def _test_reset():
+    """SOLO PER I TEST: svuota tutto. Rifiuta di agire se STORAGE_ALLOW_TEST_RESET != 1."""
+    if os.environ.get("STORAGE_ALLOW_TEST_RESET") != "1":
+        raise StorageError("_test_reset non consentito (STORAGE_ALLOW_TEST_RESET != 1)")
+    _be().reset_for_tests()

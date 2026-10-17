@@ -114,6 +114,7 @@ gestione_consegne/
 ├── storage.py              # Astrazione backend dati (json/mysql/postgres) (V2: API per singolo record)
 ├── import_data.py          # Importazione one-shot da dati.json legacy (V1)
 ├── migrate.py              # 🚧 V2: migrazione V1→V2 e tra backend (vedi §11, fase 4)
+├── tests/                  # 🚧 V2: suite di contratto di storage.py (non inclusa nell'immagine)
 ├── requirements.txt        # Dipendenze Python
 ├── Dockerfile              # Immagine Docker (python:3.13-slim-bookworm)
 ├── compose.yaml            # Orchestrazione (profili: mysql, postgres)
@@ -143,7 +144,7 @@ gestione_consegne/
     └── modal-admin.js      # 🚧 V2: pannello superadmin (caricato dinamicamente solo per il superadmin)
 ```
 
-**Dati a runtime:** nel volume `/data` (backend JSON) un file per collezione (`consegne.json`, `giornate.json`, `squadre.json` e, in V2, `negozi.json`, `tipi_account.json`, `utenti.json`) più `backup/`; con i backend MySQL/PostgreSQL le stesse collezioni sono tabelle. **Nessun dato applicativo è scritto fuori da `storage.py`** (il container è `read_only`).
+**Dati a runtime:** nel volume `/data` (backend JSON) un file per collezione (`consegne.json`, `giornate.json`, `squadre.json` e, in V2, `negozi.json`, `tipi_account.json`, `utenti.json`) più `meta.json` e `backup/`; con i backend MySQL/PostgreSQL le stesse collezioni sono tabelle. **Nessun dato applicativo è scritto fuori da `storage.py`** (il container è `read_only`).
 
 ---
 
@@ -462,28 +463,51 @@ In V2 `read_data()`/`write_data()` **non sono più usate dal server**: restano s
 ### Collezioni V2 🚧
 `consegne`, `giornate`, `squadre`, `negozi`, `tipi_account`, `utenti` (+ tabella di join `giornata_consegne` sui backend SQL).
 
-### Interfaccia pubblica V2 — **bozza** 🚧
-> La firma definitiva si decide in fase 1 con revisione. Questa è la proposta di partenza.
+### Interfaccia pubblica V2 🚧 (implementata per il backend json — fase 1, passo 1a)
 ```python
-init_storage()
-list_records(collection, filters=None)            # filters: uguaglianza, es. {"negozio_id": "n_..."}
-get_record(collection, id)                        # → dict | None
-insert_record(collection, record)                 # versione = 1 dove prevista
-update_record(collection, id, changes, expected_versione=None)
-                                                  # solleva ConflictError se la versione non coincide; incrementa versione
-delete_record(collection, id)
-# giornate ↔ consegne (transazione sui backend SQL)
-giornata_assegna(giornata_id, consegna_ids)
-giornata_rimuovi(giornata_id, consegna_id)
-giornata_riordina(giornata_id, consegna_ids_ordinati)
-giornata_completa(giornata_id, consegna_id, completata)
-make_backup()                                     # snapshot JSON (no-op per DB)
+init_storage_v2()                       # il server V2 usa questa al posto di init_storage()
+list_records(collection, filters=None)  # ordine di inserimento; filtri di uguaglianza
+get_record(collection, id)              # → dict | None
+insert_record(collection, record)       # `id` fornito dal chiamante; versione=1 dove prevista
+insert_records(collection, records)     # una collezione, tutto-o-niente (usata da migrate.py)
+update_record(collection, id, changes, expected_versione=None)   # merge; incrementa versione
+delete_record(collection, id)           # → True | False (non esisteva)
+giornata_assegna(giornata_id, consegna_ids)       # aggiunge in coda, idempotente
+giornata_rimuovi(giornata_id, consegna_id)        # idempotente
+giornata_riordina(giornata_id, ordered_ids)       # permutazione esatta
+get_meta(key, default=None) / set_meta(key, value)   # schema_version, flag migrazione
+backup_now()                            # snapshot immediato (json); no-op per i backend DB
 ```
-Eccezioni previste: `ConflictError` (→ 409), `NotFoundError` (→ 404), `StorageError` (errore di persistenza). Il comportamento del server su `StorageError` (crash o 500) è un punto aperto (§11).
+Collezioni: `consegne`, `giornate`, `squadre`, `negozi`, `tipi_account`, `utenti`. La specifica (campi obbligatori, default, unicità, riferimenti) è dichiarata una sola volta nel codice (`_COLL`) e vale per tutti i backend.
+
+**Eccezioni** (tutte derivano da `StorageError`; il server le traduce in HTTP): `ConflictError` → 409, `NotFoundError` → 404, `DuplicateError`, `IntegrityError`. Gli errori di programmazione (collezione sconosciuta, campo obbligatorio mancante, campo non modificabile) sono `ValueError`. Il comportamento del server su `StorageError` generico (crash o 500) resta un punto aperto (§11).
+
+**Semantica comune a tutti i backend:**
+- **`None` = campo assente.** Un valore `None` non viene memorizzato né restituito; `update_record(..., {"campo": None})` rimuove il campo. (Su SQL, NULL ≡ chiave mancante: è ciò che rende identici i risultati.)
+- **Chiavi sempre camelCase** come nel frontend (`colorIdx`, `giornoConsegna`, ...): nessuna chiave snake_case esce dallo storage. I campi sconosciuti allo schema sono conservati e restituiti invariati.
+- **`id` e `negozio_id` forniti dal chiamante**; `negozio_id` e `id` non sono modificabili; `versione` è gestita solo dallo storage (valore fornito all'inserimento ignorato).
+- **Default:** `consegne.stato = in_attesa`, `squadre.colorIdx = 0`, `utenti.is_superadmin = false`, `utenti.primo_login = true`.
+- **Unicità:** `id`; `utenti.username` e `tipi_account.nome`. `utenti.username` è confrontato **senza distinguere maiuscole/minuscole** (anche nei filtri), come fa `dev`, su tutti i backend.
+- **Riferimenti (come `RESTRICT`):** `negozio_id` deve esistere; `utenti.tipo_account_id` e `utenti.negozio_id` possono essere assenti (superadmin). Eliminare un negozio ancora usato (da utenti, consegne, giornate o squadre) o un tipo account con utenti → `IntegrityError`.
+- **Eliminare una consegna la toglie da tutte le giornate** (equivale a `ON DELETE CASCADE`), anche su JSON.
+- **Operazioni sulle giornate:** le consegne assegnate devono esistere (`NotFoundError`) e appartenere allo stesso negozio della giornata (`ValueError`); l'operazione è tutto-o-niente. **Non modificano `versione`** (come in `dev`).
+- **`giornata_completa` non esiste:** in `dev` "segna completata" imposta solo `stato = completata` sulla consegna; il flag per singola consegna nella giornata (`consegneCompletate`, colonna `completata`) non è mai stato usato né dal frontend né dal server. Viene ignorato in inserimento e non è più restituito.
+
+### Test (suite di contratto)
+`tests/test_storage_contract.py` contiene gli **stessi test per tutti i backend**: round-trip dei record, optimistic locking (anche sotto concorrenza), unicità, riferimenti, isolamento per negozio, operazioni sulle giornate, `insert_records` tutto-o-niente, metadati; più test specifici del backend json (persistenza, file corrotto, backup).
+```bash
+DB_BACKEND=json python -m unittest discover -s tests -v
+```
+⚠️ Con i backend DB la suite **svuota le tabelle**: va usata solo su un database di test, mai su quello di produzione. Solo libreria standard, nessuna dipendenza aggiuntiva.
 
 ### Backend JSON
-File separati in `DATA_DIR`, ciascuno **un array di record**: `consegne.json`, `giornate.json`, `squadre.json` e 🚧 V2 `negozi.json`, `tipi_account.json`, `utenti.json`.
-Scrittura atomica (`.tmp` + `os.replace()`) sotto lock per collezione. Backup in `DATA_DIR/backup/` (max 20 per tipo). L'API è per record, ma internamente il backend JSON riscrive il file della collezione: adatto a installazioni piccole (scelta consapevole, vedi §10).
+File separati in `DATA_DIR`, ciascuno **un array di record**: `consegne.json`, `giornate.json`, `squadre.json` e 🚧 V2 `negozi.json`, `tipi_account.json`, `utenti.json`, più `meta.json` (metadati). Formato invariato rispetto a V1: i file V1 restano leggibili.
+- **Lock unico** per tutte le operazioni (un solo `RLock`): il carico è minimo e si escludono i deadlock tra collezioni. (Sostituisce il "lock per collezione" ipotizzato inizialmente.)
+- **Scrittura atomica** (`.tmp` + `fsync` + `os.replace()`), 2 tentativi come in V1.
+- **File illeggibile → `StorageError`**: non si restituisce mai un valore di default che verrebbe poi riscritto sopra i dati.
+- **Backup** in `DATA_DIR/backup/` di tutte le collezioni e di `meta.json`: **al massimo uno ogni 5 minuti** (`BACKUP_MIN_INTERVAL = 300`, non più uno a ogni scrittura) e sempre su richiesta con `backup_now()` (prima di una migrazione). Si conservano gli ultimi 20 per file.
+- L'API è per record, ma internamente il backend JSON riscrive il file della collezione: adatto a installazioni piccole (scelta consapevole, vedi §10).
+- Eliminare una consegna scrive prima le giornate e poi la consegna: un'interruzione lascia al più una consegna non assegnata, mai un riferimento orfano.
 
 ### Backend MySQL / PostgreSQL
 Schema nativo (non blob JSON). Tabelle V1:
@@ -541,7 +565,7 @@ ALTER TABLE giornate ADD COLUMN versione   INTEGER NOT NULL DEFAULT 1;
 ```
 - **`giornate.squadra` resta una stringa (nome)** in questa iterazione. Il passaggio a `giornate.squadra_id` (FK verso `squadre`) è la **fase 6** (§11): tocca server, 5 file frontend, migrazione e schema, e si fa solo dopo che la V2 funziona.
 - Per il backend JSON la struttura dei record è la stessa (§8).
-- Le definizioni finali (vincoli `ON DELETE`, `NOT NULL` su `negozio_id` dopo la migrazione, indici su `negozio_id`) si fissano in fase 1 (§11, punti aperti).
+- **Decisioni per lo schema SQL (passi 1b/1c):** `ON DELETE RESTRICT` da `utenti` verso `tipi_account` e `negozi` (e dalle tabelle operative verso `negozi`); `ON DELETE CASCADE` da `giornata_consegne` verso giornate e consegne; `NOT NULL` su `negozio_id` delle tabelle operative; indici su `negozio_id`; colonna di sequenza per garantire l'ordine di inserimento; `giornata_consegne` senza la colonna `completata` (non usata, vedi sopra). Chiavi in lettura sempre camelCase (nessuna chiave snake_case esce dallo storage).
 
 ### Retry e attesa DB
 `init_storage()` tenta la connessione al DB fino a 10 volte (3 secondi di pausa tra un tentativo e l'altro) per gestire il caso in cui il container DB non sia ancora pronto al momento dell'avvio dell'app.
@@ -840,7 +864,7 @@ Questa sezione traccia l'avanzamento della V2 sul branch `v2-docker` (partito da
 | Fase | Contenuto | Stato |
 |------|-----------|-------|
 | 0 | Documentazione (`AGENTS.md`, `README.md`) | ✅ completata, in revisione |
-| 1 | `storage.py`: schema V2 e API per singolo record su json/mysql/postgres, con suite di test condivisa | ⬜ |
+| 1 | `storage.py`: schema V2 e API per singolo record su json/mysql/postgres, con suite di test condivisa | 🔶 in corso — 1a ✅ (API, backend json, suite) · 1b PostgreSQL ⬜ · 1c MySQL ⬜ · 1d marcatore schema ⬜ · 1e documentazione finale ⬜ |
 | 2 | `server.py`: Challenge-Response, sessioni, endpoint REST, permessi, filtro `negozio_id`, `/api/stato`, creazione superadmin | ⬜ |
 | 3 | Frontend V2 (vedi metodo sotto) | ⬜ |
 | 4 | `migrate.py` | ⬜ |
@@ -865,8 +889,8 @@ Ogni fase è un commit separato (o gruppo di commit) rivisto prima di passare al
 ### Punti aperti (da decidere prima o durante la fase indicata)
 | # | Punto | Fase |
 |---|-------|------|
-| 1 | Firma definitiva dell'API di `storage.py` (§6 è una bozza) | 1 |
-| 2 | Vincoli SQL: `ON DELETE` (restrizione vs `SET NULL`) coerente con la regola "non eliminabile se ha utenti"; `NOT NULL` su `negozio_id` dopo la migrazione; indici su `negozio_id` | 1 |
+| 1 | ~~Firma dell'API di `storage.py`~~ definita e implementata per json (§6); da riconfermare a fine fase 1 | 1 |
+| 2 | ~~Vincoli SQL~~ deciso: `RESTRICT`, `NOT NULL` su `negozio_id`, indici, colonna di sequenza (§6); da applicare in 1b/1c | 1 |
 | 3 | Comportamento del server su `StorageError`: crash (V1: "2 tentativi poi crash") oppure risposta 500 mantenendo il server attivo | 1-2 |
 | 4 | Timestamp di polling per negozio invece che globali | 2 |
 | 5 | `migrate.py`: migrazione sullo stesso backend (in-place o su nuova destinazione), eventuali dati dell'era `dev` da preservare, rapporto con `import_data.py` (resta separato o viene assorbito) | 4 |

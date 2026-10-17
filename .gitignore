@@ -4,3 +4,5 @@ git/
 _working_backup/
 dati.json
 *.log
+__pycache__/
+*.pyc

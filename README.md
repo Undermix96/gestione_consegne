@@ -296,6 +296,7 @@ Categorie: `[AUTH]`, `[UTENTI]`, `[DATI]`, `[NEGOZI]`, `[TIPI_ACCOUNT]`. In Dock
 2. Filtra sempre per `negozio_id` e registra l'operazione nel log con categoria `[DATI]`
 3. Le modifiche allo schema vanno fatte in `storage.py` su **tutti e tre** i backend e riportate in `migrate.py`
 4. Prima di iniziare una fase di sviluppo V2 leggi `AGENTS.md` §11 (stato, metodo, punti aperti)
+5. Test dello storage: `DB_BACKEND=json python -m unittest discover -s tests -v` (con i backend DB la suite svuota le tabelle: solo su un database di test)
 
 ### Build e push dell'immagine
 ```bash
