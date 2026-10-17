@@ -1,0 +1,51 @@
+# Suite di test di storage.py su tutti i backend, con database TEMPORANEI.
+#
+#   docker compose -f compose.test.yaml up --build --exit-code-from tests
+#   docker compose -f compose.test.yaml down        # pulizia (nessun dato da conservare)
+#
+# Sicurezza:
+# - nome progetto diverso dalla produzione: reti, container e volumi separati
+# - i database di test non hanno volumi (tmpfs) e nessuna porta pubblicata
+# - il nome del database finisce per "_test": la suite rifiuta di svuotare qualsiasi altro database
+# - il codice dell'app e' quello dell'immagine appena compilata; tests/ e' montata in sola lettura
+#
+# Opzioni: TEST_VERBOSE=1 per l'elenco dei singoli test.
+name: gestione-consegne-test
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    command: ["postgres", "-c", "fsync=off"]      # solo per i test: piu' veloce
+    environment:
+      POSTGRES_DB: gestione_consegne_test
+      POSTGRES_USER: test
+      POSTGRES_PASSWORD: test
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U test -d gestione_consegne_test"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  tests:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["sh", "tests/run_all.sh"]
+    environment:
+      TEST_BACKENDS: "json postgres"
+      TEST_VERBOSE: "${TEST_VERBOSE:-0}"
+      PYTHONDONTWRITEBYTECODE: "1"
+      DB_HOST: postgres
+      DB_NAME: gestione_consegne_test
+      DB_USER: test
+      DB_PASSWORD: test
+    volumes:
+      - ./tests:/app/tests:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    healthcheck:
+      disable: true

@@ -115,6 +115,9 @@ gestione_consegne/
 ├── import_data.py          # Importazione one-shot da dati.json legacy (V1)
 ├── migrate.py              # 🚧 V2: migrazione V1→V2 e tra backend (vedi §11, fase 4)
 ├── tests/                  # 🚧 V2: suite di contratto di storage.py (non inclusa nell'immagine)
+│   ├── test_storage_contract.py
+│   └── run_all.sh          # esegue la suite su ogni backend (TEST_BACKENDS)
+├── compose.test.yaml       # 🚧 V2: database temporanei per i test (separato dalla produzione)
 ├── requirements.txt        # Dipendenze Python
 ├── Dockerfile              # Immagine Docker (python:3.13-slim-bookworm)
 ├── compose.yaml            # Orchestrazione (profili: mysql, postgres)
@@ -391,7 +394,7 @@ Un utente con `tipo_account_id: null` viene bloccato al login con messaggio "Acc
 - Il client include `versione` nelle richieste `PUT`
 - Se `client_versione != versione` salvata → **409 Conflict** con messaggio "la consegna/giornata è stata modificata da un altro utente. Ricarica e riprova."
 - La `versione` viene incrementata a ogni scrittura riuscita
-- **Il confronto è atomico nel layer `storage.py`** (su DB: `UPDATE ... WHERE id = ? AND versione = ?`; su JSON: sotto lock di collezione). Il server non fa read-then-write separati.
+- **Il confronto è atomico nel layer `storage.py`** (su SQL: lock di riga `SELECT ... FOR UPDATE`, confronto di `versione` e `UPDATE` nella stessa transazione; su JSON: sotto il lock unico del backend). Il server non fa read-then-write separati.
 
 ### Polling e sincronizzazione 🚧
 - **Ping**: ogni 2 secondi, 1 fallimento consecutivo → overlay disconnessione (in V1 la soglia è 2)
@@ -463,7 +466,7 @@ In V2 `read_data()`/`write_data()` **non sono più usate dal server**: restano s
 ### Collezioni V2 🚧
 `consegne`, `giornate`, `squadre`, `negozi`, `tipi_account`, `utenti` (+ tabella di join `giornata_consegne` sui backend SQL).
 
-### Interfaccia pubblica V2 🚧 (implementata per il backend json — fase 1, passo 1a)
+### Interfaccia pubblica V2 🚧 (implementata per json e PostgreSQL — fase 1, passi 1a/1b)
 ```python
 init_storage_v2()                       # il server V2 usa questa al posto di init_storage()
 list_records(collection, filters=None)  # ordine di inserimento; filtri di uguaglianza
@@ -493,12 +496,24 @@ Collezioni: `consegne`, `giornate`, `squadre`, `negozi`, `tipi_account`, `utenti
 - **Operazioni sulle giornate:** le consegne assegnate devono esistere (`NotFoundError`) e appartenere allo stesso negozio della giornata (`ValueError`); l'operazione è tutto-o-niente. **Non modificano `versione`** (come in `dev`).
 - **`giornata_completa` non esiste:** in `dev` "segna completata" imposta solo `stato = completata` sulla consegna; il flag per singola consegna nella giornata (`consegneCompletate`, colonna `completata`) non è mai stato usato né dal frontend né dal server. Viene ignorato in inserimento e non è più restituito.
 
+- **Tipi, lunghezze, caratteri:** i campi noti hanno un tipo (testo, intero, booleano, lista) e un valore di tipo diverso è un `ValueError` (nessuna conversione silenziosa: `colorIdx="3"` viene rifiutato). `id` e riferimenti max 36 caratteri, `username` 150, `tipi_account.nome` 255, `password_hash` 64. Il carattere NUL è rifiutato ovunque. I controlli sono nel livello comune: tutti i backend accettano e rifiutano gli stessi valori.
+- **Campi con default non rimovibili:** `consegne.stato`, `squadre.colorIdx`, `utenti.is_superadmin`, `utenti.primo_login` sono come obbligatori (`update_record(..., {"stato": None})` → `ValueError`).
+- **Filtri:** solo uguaglianza su `id`, `versione` (se prevista) e campi tipizzati scalari; un filtro `None` trova i record senza quel campo. Un filtro su un campo "extra" o su una lista è un `ValueError` (su SQL non sarebbe una colonna). Confronti esatti (maiuscole e accenti contano), tranne `utenti.username`.
+- **Ordine:** `list_records` restituisce sempre l'ordine di inserimento, anche dopo gli update.
+
 ### Test (suite di contratto)
-`tests/test_storage_contract.py` contiene gli **stessi test per tutti i backend**: round-trip dei record, optimistic locking (anche sotto concorrenza), unicità, riferimenti, isolamento per negozio, operazioni sulle giornate, `insert_records` tutto-o-niente, metadati; più test specifici del backend json (persistenza, file corrotto, backup).
+`tests/test_storage_contract.py` contiene gli **stessi test per tutti i backend**: round-trip dei record, optimistic locking (anche sotto concorrenza, con una pausa forzata tra lettura e scrittura per rendere la corsa deterministica), unicità, riferimenti, tipi e lunghezze, filtri, ordine di inserimento, isolamento per negozio, operazioni sulle giornate, `insert_records` tutto-o-niente, metadati; più test specifici del backend json (persistenza, file corrotto, backup) e dei backend SQL (schema idempotente, connessione persa, reset rifiutato). La qualità dei test è stata verificata introducendo bug intenzionali nel codice (mutation check): ogni bug reale è stato rilevato.
+
+Tutto si esegue **in Docker** (sul server non serve Python). Database di test temporanei, separati dalla produzione:
 ```bash
-DB_BACKEND=json python -m unittest discover -s tests -v
+docker compose -f compose.test.yaml up --build --exit-code-from tests
+docker compose -f compose.test.yaml down
 ```
-⚠️ Con i backend DB la suite **svuota le tabelle**: va usata solo su un database di test, mai su quello di produzione. Solo libreria standard, nessuna dipendenza aggiuntiva.
+`compose.test.yaml` avvia PostgreSQL 16 senza volumi né porte pubblicate e un container `tests` (immagine compilata dal `Dockerfile`, `tests/` montata in sola lettura) che lancia `tests/run_all.sh` su ogni backend elencato in `TEST_BACKENDS`. Con `TEST_VERBOSE=1` si ottiene l'elenco dei singoli test. Solo json, senza database:
+```bash
+docker run --rm -v "$PWD":/app:ro -w /app -e DB_BACKEND=json python:3.13-slim-bookworm python -B -m unittest discover -s tests
+```
+⚠️ Con i backend DB la suite **svuota le tabelle**: rifiuta di agire se `DB_NAME` non termina con `_test`, ma non va mai puntata a un database di produzione. Solo libreria standard, nessuna dipendenza aggiuntiva.
 
 ### Backend JSON
 File separati in `DATA_DIR`, ciascuno **un array di record**: `consegne.json`, `giornate.json`, `squadre.json` e 🚧 V2 `negozi.json`, `tipi_account.json`, `utenti.json`, più `meta.json` (metadati). Formato invariato rispetto a V1: i file V1 restano leggibili.
@@ -509,7 +524,7 @@ File separati in `DATA_DIR`, ciascuno **un array di record**: `consegne.json`, `
 - L'API è per record, ma internamente il backend JSON riscrive il file della collezione: adatto a installazioni piccole (scelta consapevole, vedi §10).
 - Eliminare una consegna scrive prima le giornate e poi la consegna: un'interruzione lascia al più una consegna non assegnata, mai un riferimento orfano.
 
-### Backend MySQL / PostgreSQL
+### Backend SQL V1 (attuale su `main`)
 Schema nativo (non blob JSON). Tabelle V1:
 
 | Tabella | Descrizione |
@@ -519,53 +534,125 @@ Schema nativo (non blob JSON). Tabelle V1:
 | `giornate` | Giornate con `id`, `data`, `squadra` (nome stringa in V1), `extra` |
 | `giornata_consegne` | Join giornata↔consegna con `ordine` e `completata` |
 
-Il campo `extra` (JSONB in Postgres, JSON in MySQL) cattura eventuali campi aggiuntivi del frontend senza rompere lo schema. È pienamente leggibile da chiunque acceda al DB.
+Il campo `extra` (JSONB in Postgres, JSON in MySQL) cattura eventuali campi aggiuntivi del frontend senza rompere lo schema.
 
-I campi camelCase del frontend (`giornoConsegna`, `fasciaOraria`, ecc.) vengono normalizzati a snake_case al salvataggio e riconvertiti alla lettura.
+⚠️ **Difetto noto della V1 sui backend SQL** (rilevato leggendo il codice, non eseguito su un DB reale): i campi camelCase noti vengono scritti in colonne snake_case ma **non vengono riconvertiti in lettura**. Le squadre tornano con `color_idx` invece di `colorIdx` (il frontend usa solo `colorIdx`: i colori andrebbero persi dopo un ricaricamento) e le consegne restituiscono sia le chiavi snake_case sia quelle camelCase salvate in `extra`. La V2 non ha questo difetto (le chiavi in uscita sono sempre camelCase). `main` non è stato modificato.
 
-### Schema DB V2 🚧
-Le tabelle V1 vengono **estese, non sostituite**. Sintassi MySQL; su PostgreSQL: `JSONB` al posto di `JSON`, `BOOLEAN` nativo.
+### Backend PostgreSQL V2 🚧 (passo 1b — implementato)
+Implementazione in `storage.py`: la classe `_SqlV2` contiene tutta la logica comune ai database SQL, `_PgV2` solo il dialetto (connessione, `JSONB`, mappatura errori, upsert dei metadati). Il backend MySQL (passo 1c) riusa `_SqlV2`.
+- **Schema generato dalla specifica** (`_COLL` + `_COLS`): tabelle e colonne non sono scritte a mano due volte, quindi non possono divergere dal codice. Creato all'avvio con `CREATE TABLE IF NOT EXISTS` (**non aggiorna tabelle già esistenti**: il rifiuto di schemi V1 o più vecchi è il passo 1d).
+- **Una transazione per operazione**, con una connessione dedicata (come V1: robusta ai riavvii del DB), 2 tentativi di connessione.
+- **Optimistic locking atomico tramite lock di riga:** `SELECT ... FOR UPDATE`, confronto di `versione`, `UPDATE` nella stessa transazione. Il merge dei campi è lo stesso codice del backend json (`_apply_changes`).
+- **Errori:** violazione di unicità → `DuplicateError`; violazione di riferimento (inesistente o ancora referenziato) → `IntegrityError`; errori sui dati → `ValueError`; il resto → `StorageError`.
+- **Ordine di inserimento garantito** dalla colonna `seq` (`ORDER BY seq`).
+- **`utenti.username`:** unicità e filtri tramite la colonna derivata `username_ci = casefold(username)`, calcolata in Python con la stessa funzione del backend json (non `lower()` di PostgreSQL, che darebbe risultati diversi su caratteri particolari). `tipi_account.nome` è univoco **con distinzione di maiuscole**.
+- **`JSONB`** per `articoli`, `permessi` e `extra` (campi sconosciuti allo schema, restituiti invariati).
+- **Nessun backup applicativo** per i backend DB (`backup_now()` non fa nulla): usare gli strumenti del database (`pg_dump`).
+- La funzione di reset usata dai test rifiuta di agire se `DB_NAME` non termina con `_test`.
+
+### Backend MySQL V2 🚧 (passo 1c — da fare)
+Stessa logica comune (`_SqlV2`); da definire nel dialetto: colonne `JSON` restituite come testo, `BOOLEAN` come `TINYINT`, collation `utf8mb4_bin` sulle tabelle (confronti esatti, nessuna insensibilità a maiuscole/accenti), upsert dei metadati con `ON DUPLICATE KEY UPDATE`, indici sulle chiavi esterne creati automaticamente da InnoDB.
+
+### Schema DB V2 🚧 (generato da `storage.py`, dialetto PostgreSQL)
+Per le installazioni V2 lo schema è **nuovo** (non si estendono le tabelle V1). Fa fede il codice: questo elenco è l'output di `_PgV2._ddl_statements()`.
 
 ```sql
--- NUOVE tabelle
 CREATE TABLE negozi (
-    id        VARCHAR(36) PRIMARY KEY,
-    nome      VARCHAR(255) NOT NULL,
-    creato_il TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    id VARCHAR(36) PRIMARY KEY,
+    seq BIGSERIAL NOT NULL UNIQUE,
+    nome TEXT NOT NULL,
+    creato_il TEXT,
+    extra JSONB
 );
-
 CREATE TABLE tipi_account (
-    id            VARCHAR(36) PRIMARY KEY,
-    nome          VARCHAR(255) NOT NULL UNIQUE,
-    permessi      TEXT NOT NULL,           -- JSON array: '["consegne.leggi","stampa.pdf"]'
-    creato_il     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    modificato_il TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    id VARCHAR(36) PRIMARY KEY,
+    seq BIGSERIAL NOT NULL UNIQUE,
+    nome VARCHAR(255) NOT NULL,
+    permessi JSONB NOT NULL,
+    creato_il TEXT,
+    modificato_il TEXT,
+    extra JSONB,
+    UNIQUE (nome)
 );
-
 CREATE TABLE utenti (
-    id               VARCHAR(36) PRIMARY KEY,
-    username         VARCHAR(150) NOT NULL UNIQUE,
-    password_hash    VARCHAR(64) NOT NULL,   -- sha256(password), hex (vedi "Limiti noti" in §5)
-    tipo_account_id  VARCHAR(36) REFERENCES tipi_account(id),
-    negozio_id       VARCHAR(36) REFERENCES negozi(id),
-    is_superadmin    BOOLEAN NOT NULL DEFAULT FALSE,
-    primo_login      BOOLEAN NOT NULL DEFAULT TRUE,
-    creato_da        VARCHAR(36),
-    creato_il        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    ultimo_accesso   TIMESTAMP
+    id VARCHAR(36) PRIMARY KEY,
+    seq BIGSERIAL NOT NULL UNIQUE,
+    username VARCHAR(150) NOT NULL,
+    password_hash VARCHAR(64) NOT NULL,
+    tipo_account_id VARCHAR(36),
+    negozio_id VARCHAR(36),
+    is_superadmin BOOLEAN NOT NULL,
+    primo_login BOOLEAN NOT NULL,
+    creato_da VARCHAR(36),
+    creato_il TEXT,
+    ultimo_accesso TEXT,
+    username_ci VARCHAR(150) NOT NULL UNIQUE,
+    extra JSONB,
+    FOREIGN KEY (negozio_id) REFERENCES negozi(id) ON DELETE RESTRICT,
+    FOREIGN KEY (tipo_account_id) REFERENCES tipi_account(id) ON DELETE RESTRICT
 );
-
--- MODIFICHE alle tabelle esistenti
-ALTER TABLE consegne ADD COLUMN negozio_id VARCHAR(36) REFERENCES negozi(id);
-ALTER TABLE consegne ADD COLUMN versione   INTEGER NOT NULL DEFAULT 1;
-ALTER TABLE squadre  ADD COLUMN negozio_id VARCHAR(36) REFERENCES negozi(id);
-ALTER TABLE squadre  ADD COLUMN versione   INTEGER NOT NULL DEFAULT 1;
-ALTER TABLE giornate ADD COLUMN negozio_id VARCHAR(36) REFERENCES negozi(id);
-ALTER TABLE giornate ADD COLUMN versione   INTEGER NOT NULL DEFAULT 1;
+CREATE TABLE consegne (
+    id VARCHAR(36) PRIMARY KEY,
+    seq BIGSERIAL NOT NULL UNIQUE,
+    negozio_id VARCHAR(36) NOT NULL,
+    nome TEXT,
+    cognome TEXT,
+    indirizzo TEXT,
+    citta TEXT,
+    stato TEXT NOT NULL,
+    note TEXT,
+    giorno_consegna TEXT,
+    fascia_oraria TEXT,
+    data_prenotaz TEXT,
+    articoli JSONB,
+    versione INTEGER NOT NULL DEFAULT 1,
+    extra JSONB,
+    FOREIGN KEY (negozio_id) REFERENCES negozi(id) ON DELETE RESTRICT
+);
+CREATE TABLE giornate (
+    id VARCHAR(36) PRIMARY KEY,
+    seq BIGSERIAL NOT NULL UNIQUE,
+    negozio_id VARCHAR(36) NOT NULL,
+    data TEXT NOT NULL,
+    squadra TEXT,
+    versione INTEGER NOT NULL DEFAULT 1,
+    extra JSONB,
+    FOREIGN KEY (negozio_id) REFERENCES negozi(id) ON DELETE RESTRICT
+);
+CREATE TABLE squadre (
+    id VARCHAR(36) PRIMARY KEY,
+    seq BIGSERIAL NOT NULL UNIQUE,
+    negozio_id VARCHAR(36) NOT NULL,
+    nome TEXT NOT NULL,
+    color_idx INTEGER NOT NULL,
+    versione INTEGER NOT NULL DEFAULT 1,
+    extra JSONB,
+    FOREIGN KEY (negozio_id) REFERENCES negozi(id) ON DELETE RESTRICT
+);
+CREATE TABLE giornata_consegne (
+    giornata_id VARCHAR(36) NOT NULL,
+    consegna_id VARCHAR(36) NOT NULL,
+    ordine INTEGER NOT NULL,
+    PRIMARY KEY (giornata_id, consegna_id),
+    FOREIGN KEY (giornata_id) REFERENCES giornate(id) ON DELETE CASCADE,
+    FOREIGN KEY (consegna_id) REFERENCES consegne(id) ON DELETE CASCADE
+);
+CREATE TABLE meta (
+    chiave VARCHAR(100) PRIMARY KEY,
+    valore JSONB NOT NULL
+);
+CREATE INDEX ix_utenti_negozio_id ON utenti (negozio_id);
+CREATE INDEX ix_utenti_tipo_account_id ON utenti (tipo_account_id);
+CREATE INDEX ix_consegne_negozio_id ON consegne (negozio_id);
+CREATE INDEX ix_giornate_negozio_id ON giornate (negozio_id);
+CREATE INDEX ix_squadre_negozio_id ON squadre (negozio_id);
+CREATE INDEX ix_giornata_consegne_consegna ON giornata_consegne (consegna_id);
 ```
-- **`giornate.squadra` resta una stringa (nome)** in questa iterazione. Il passaggio a `giornate.squadra_id` (FK verso `squadre`) è la **fase 6** (§11): tocca server, 5 file frontend, migrazione e schema, e si fa solo dopo che la V2 funziona.
+- **`giornate.squadra` resta una stringa (nome)** in questa iterazione. Il passaggio a `giornate.squadra_id` (FK verso `squadre`) è la **fase 6** (§11).
 - Per il backend JSON la struttura dei record è la stessa (§8).
-- **Decisioni per lo schema SQL (passi 1b/1c):** `ON DELETE RESTRICT` da `utenti` verso `tipi_account` e `negozi` (e dalle tabelle operative verso `negozi`); `ON DELETE CASCADE` da `giornata_consegne` verso giornate e consegne; `NOT NULL` su `negozio_id` delle tabelle operative; indici su `negozio_id`; colonna di sequenza per garantire l'ordine di inserimento; `giornata_consegne` senza la colonna `completata` (non usata, vedi sopra). Chiavi in lettura sempre camelCase (nessuna chiave snake_case esce dallo storage).
+- **Regole dello schema:** `ON DELETE RESTRICT` da `utenti` verso `tipi_account` e `negozi` e dalle tabelle operative verso `negozi`; `ON DELETE CASCADE` da `giornata_consegne` verso giornate e consegne; `negozio_id` `NOT NULL` sulle tabelle operative; indici sulle chiavi esterne; `giornata_consegne` senza la colonna `completata` (non usata).
+- `seq` serve solo a ordinare per inserimento: non esce mai dallo storage. `username_ci` è una colonna interna derivata, anch'essa mai restituita.
+- Lunghezze: `VARCHAR(n)` solo per chiavi e campi indicizzati (`id`/riferimenti 36, `username` 150, `tipi_account.nome` 255, `password_hash` 64); il testo libero è `TEXT` senza limite.
 
 ### Retry e attesa DB
 `init_storage()` tenta la connessione al DB fino a 10 volte (3 secondi di pausa tra un tentativo e l'altro) per gestire il caso in cui il container DB non sia ancora pronto al momento dell'avvio dell'app.
@@ -835,7 +922,7 @@ Click ✕ sulla card → la consegna torna "in_attesa", `giornoConsegna` e `fasc
 | `tipi_account.gestisci` e `negozi.gestisci` solo superadmin | Non assegnabili ad altri account |
 | Dipendenze tra permessi come avvisi, senza auto-selezione | Più trasparente: chi configura deve essere consapevole |
 | Optimistic locking con `versione` | Protegge da scritture concorrenti; atomico nel layer di storage |
-| **Storage per singolo record su tutti i backend** | Un layer di astrazione con più DB perde utilità se si riscrive l'intera tabella a ogni salvataggio; su DB permette `UPDATE ... WHERE versione = ?` atomico e non rischia i dati degli altri negozi |
+| **Storage per singolo record su tutti i backend** | Un layer di astrazione con più DB perde utilità se si riscrive l'intera tabella a ogni salvataggio; su DB il controllo di versione è atomico (lock di riga) e una scrittura fallita non rischia i dati degli altri negozi |
 | Utenti, negozi e tipi account dentro `storage.py` | Nessun dato fuori dal layer di storage; container `read_only`; stesso backend per tutto |
 | Polling via timestamp | Evita render inutili; scarica solo ciò che è cambiato |
 | Risposta delle scritture = db aggiornato del negozio | Il client è sempre in sync dopo ogni operazione propria |
@@ -864,7 +951,7 @@ Questa sezione traccia l'avanzamento della V2 sul branch `v2-docker` (partito da
 | Fase | Contenuto | Stato |
 |------|-----------|-------|
 | 0 | Documentazione (`AGENTS.md`, `README.md`) | ✅ completata, in revisione |
-| 1 | `storage.py`: schema V2 e API per singolo record su json/mysql/postgres, con suite di test condivisa | 🔶 in corso — 1a ✅ (API, backend json, suite) · 1b PostgreSQL ⬜ · 1c MySQL ⬜ · 1d marcatore schema ⬜ · 1e documentazione finale ⬜ |
+| 1 | `storage.py`: schema V2 e API per singolo record su json/mysql/postgres, con suite di test condivisa | 🔶 in corso — 1a ✅ (API, backend json, suite) · 1b ✅ (PostgreSQL, `compose.test.yaml`) · 1c MySQL ⬜ · 1d marcatore schema ⬜ · 1e documentazione finale ⬜ |
 | 2 | `server.py`: Challenge-Response, sessioni, endpoint REST, permessi, filtro `negozio_id`, `/api/stato`, creazione superadmin | ⬜ |
 | 3 | Frontend V2 (vedi metodo sotto) | ⬜ |
 | 4 | `migrate.py` | ⬜ |
@@ -890,7 +977,7 @@ Ogni fase è un commit separato (o gruppo di commit) rivisto prima di passare al
 | # | Punto | Fase |
 |---|-------|------|
 | 1 | ~~Firma dell'API di `storage.py`~~ definita e implementata per json (§6); da riconfermare a fine fase 1 | 1 |
-| 2 | ~~Vincoli SQL~~ deciso: `RESTRICT`, `NOT NULL` su `negozio_id`, indici, colonna di sequenza (§6); da applicare in 1b/1c | 1 |
+| 2 | ~~Vincoli SQL~~ deciso e applicato su PostgreSQL (§6); da applicare su MySQL in 1c | 1 |
 | 3 | Comportamento del server su `StorageError`: crash (V1: "2 tentativi poi crash") oppure risposta 500 mantenendo il server attivo | 1-2 |
 | 4 | Timestamp di polling per negozio invece che globali | 2 |
 | 5 | `migrate.py`: migrazione sullo stesso backend (in-place o su nuova destinazione), eventuali dati dell'era `dev` da preservare, rapporto con `import_data.py` (resta separato o viene assorbito) | 4 |

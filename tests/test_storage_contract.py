@@ -189,28 +189,55 @@ class StorageContract(unittest.TestCase):
         self.assertEqual((got["note"], got["versione"]), ("a", 2))                   # invariato
 
     def test_occ_atomico_sotto_concorrenza(self):
-        st.insert_record("consegne", consegna())
-        n = 12
-        barrier = threading.Barrier(n)
-        results = []
-        lock = threading.Lock()
+        # Si rallenta il punto tra "leggo la versione" e "scrivo": senza un vero lock
+        # (lock di riga su SQL, lock del file su json) tutti i thread passerebbero il controllo.
+        original = st._apply_changes
 
-        def worker(i):
-            barrier.wait()
-            try:
-                st.update_record("consegne", "c1", {"note": f"w{i}"}, expected_versione=1)
-                r = "ok"
-            except st.ConflictError:
-                r = "conflict"
-            with lock:
-                results.append(r)
+        def slow_apply(*args, **kwargs):
+            time.sleep(0.05)
+            return original(*args, **kwargs)
 
-        ts = [threading.Thread(target=worker, args=(i,)) for i in range(n)]
-        [t.start() for t in ts]
-        [t.join() for t in ts]
+        st._apply_changes = slow_apply
+        try:
+            st.insert_record("consegne", consegna())
+            n = 12
+            barrier = threading.Barrier(n)
+            results = []
+            lock = threading.Lock()
+
+            def worker(i):
+                barrier.wait()
+                try:
+                    st.update_record("consegne", "c1", {"note": f"w{i}"}, expected_versione=1)
+                    r = "ok"
+                except st.ConflictError:
+                    r = "conflict"
+                with lock:
+                    results.append(r)
+
+            ts = [threading.Thread(target=worker, args=(i,)) for i in range(n)]
+            [t.start() for t in ts]
+            [t.join() for t in ts]
+        finally:
+            st._apply_changes = original
         self.assertEqual(results.count("ok"), 1)
         self.assertEqual(results.count("conflict"), n - 1)
         self.assertEqual(st.get_record("consegne", "c1")["versione"], 2)
+
+    def test_update_concorrenti_senza_versione_si_serializzano(self):
+        # Senza expected_versione ogni update vince, ma la versione deve contarli TUTTI (nessun update perso)
+        original = st._apply_changes
+        st._apply_changes = lambda *a, **k: (time.sleep(0.02), original(*a, **k))[1]
+        try:
+            st.insert_record("consegne", consegna())
+            n = 8
+            ts = [threading.Thread(target=lambda i=i: st.update_record("consegne", "c1", {"note": f"w{i}"}))
+                  for i in range(n)]
+            [t.start() for t in ts]
+            [t.join() for t in ts]
+        finally:
+            st._apply_changes = original
+        self.assertEqual(st.get_record("consegne", "c1")["versione"], 1 + n)
 
     def test_update_campi_non_modificabili(self):
         st.insert_record("consegne", consegna())
@@ -425,6 +452,129 @@ class StorageContract(unittest.TestCase):
                 st.insert_records("consegne", bad_batch)
             self.assertEqual([c["id"] for c in st.list_records("consegne")], ["c0"])
 
+
+    # ── tipi, lunghezze, filtri (stesse regole su tutti i backend) ────────────
+
+    def test_campi_con_default_non_rimovibili(self):
+        st.insert_record("consegne", consegna())
+        st.insert_record("squadre", squadra())
+        st.insert_record("utenti", utente())
+        for coll, rid, field in (("consegne", "c1", "stato"), ("squadre", "sq1", "colorIdx"),
+                                 ("utenti", "u1", "primo_login"), ("utenti", "u1", "is_superadmin")):
+            with self.assertRaises(ValueError):
+                st.update_record(coll, rid, {field: None})
+        self.assertEqual(st.get_record("consegne", "c1")["versione"], 1)      # nulla è cambiato
+
+    def test_tipi_di_dato_errati(self):
+        bad = [("consegne", consegna(nome=5)), ("consegne", consegna(articoli={"a": 1})),
+               ("squadre", squadra(colorIdx="3")), ("squadre", squadra(colorIdx=True)),
+               ("utenti", utente(primo_login="si")), ("utenti", utente(is_superadmin=1)),
+               ("tipi_account", {"id": "t", "nome": "x", "permessi": "consegne.leggi"}),
+               ("giornate", giornata(data=20260325))]
+        for coll, rec in bad:
+            with self.assertRaises(ValueError, msg=f"{coll} {rec}"):
+                st.insert_record(coll, rec)
+        st.insert_record("squadre", squadra())
+        with self.assertRaises(ValueError):
+            st.update_record("squadre", "sq1", {"colorIdx": "7"})
+        self.assertEqual(st.get_record("squadre", "sq1")["colorIdx"], 3)
+
+    def test_lunghezze_e_caratteri_nul(self):
+        for coll, rec in (("consegne", consegna(cid="x" * 37)),
+                          ("utenti", utente(username="u" * 151)),
+                          ("tipi_account", {"id": "t", "nome": "n" * 256, "permessi": []}),
+                          ("consegne", consegna(nome="a\x00b")),
+                          ("consegne", consegna(campoFuturo={"k": ["ok", "x\x00y"]}))):
+            with self.assertRaises(ValueError, msg=coll):
+                st.insert_record(coll, rec)
+        st.insert_record("consegne", consegna(nome="n" * 5000))               # testo libero: nessun limite
+        self.assertEqual(len(st.get_record("consegne", "c1")["nome"]), 5000)
+        st.insert_record("utenti", utente("u1", "u" * 150))                   # limite incluso
+        st.insert_record("consegne", consegna("c" * 36))
+
+    def test_filtri_non_supportati(self):
+        for coll, flt in (("consegne", {"tel1": "x"}), ("consegne", {"articoli": []}),
+                          ("squadre", {"colorIdx": "3"}), ("consegne", {"versione": "1"}),
+                          ("negozi", {"versione": 1}), ("consegne", {"stato": 5})):
+            with self.assertRaises(ValueError, msg=f"{coll} {flt}"):
+                st.list_records(coll, flt)
+
+    def test_filtro_none_trova_campo_assente(self):
+        st.insert_record("consegne", consegna("c1", note=None))
+        st.insert_record("consegne", consegna("c2", note="x"))
+        self.assertEqual([c["id"] for c in st.list_records("consegne", {"note": None})], ["c1"])
+        self.assertEqual([c["id"] for c in st.list_records("consegne", {"note": "x"})], ["c2"])
+        self.assertEqual([c["id"] for c in st.list_records("consegne", {"id": "c2"})], ["c2"])
+        self.assertEqual([c["id"] for c in st.list_records("consegne", {"versione": 1})], ["c1", "c2"])
+
+    def test_filtri_esatti_maiuscole_e_accenti(self):
+        st.insert_record("consegne", consegna("c1", citta="Vicenza"))
+        st.insert_record("consegne", consegna("c2", citta="vicenza"))
+        st.insert_record("consegne", consegna("c3", citta="Pádova"))
+        self.assertEqual([c["id"] for c in st.list_records("consegne", {"citta": "Vicenza"})], ["c1"])
+        self.assertEqual([c["id"] for c in st.list_records("consegne", {"citta": "Padova"})], [])
+
+    def test_username_ci_non_confonde_accenti(self):
+        st.insert_record("utenti", utente("u1", "mario"))
+        st.insert_record("utenti", utente("u2", "márió"))                     # diverso: nessun conflitto
+        self.assertEqual([u["id"] for u in st.list_records("utenti", {"username": "MÁRIÓ"})], ["u2"])
+
+    def test_nome_tipo_account_case_sensitive(self):
+        st.insert_record("tipi_account", {"id": "t1", "nome": "Admin", "permessi": []})
+        st.insert_record("tipi_account", {"id": "t2", "nome": "admin", "permessi": []})   # ammesso
+        self.assertEqual(len(st.list_records("tipi_account")), 2)
+
+    def test_valori_json_annidati_e_numeri(self):
+        extra = {"n": 2 ** 40, "neg": -7, "f": 1.5, "b": True, "nul": None, "lista": [1, "a", None],
+                 "vuoto": {}, "emoji": "🚚"}
+        st.insert_record("consegne", consegna(campoFuturo=extra))
+        self.assertEqual(st.get_record("consegne", "c1")["campoFuturo"], extra)
+        st.insert_record("consegne", consegna("c2", articoli=[]))
+        self.assertEqual(st.get_record("consegne", "c2")["articoli"], [])
+
+    def test_lista_vuota_e_chiavi_riservate_nel_campo_extra(self):
+        st.insert_record("consegne", consegna(extra="x", seq=5, id_ext=1))     # nomi ambigui con le colonne
+        got = st.get_record("consegne", "c1")
+        self.assertEqual((got["extra"], got["seq"], got["id_ext"]), ("x", 5, 1))
+
+    def test_stesso_record_dopo_piu_update(self):
+        st.insert_record("consegne", consegna())
+        for i in range(5):
+            st.update_record("consegne", "c1", {"note": f"n{i}", "campoFuturo": {"i": i}})
+        got = st.get_record("consegne", "c1")
+        self.assertEqual((got["note"], got["campoFuturo"], got["versione"]), ("n4", {"i": 4}, 6))
+        self.assertEqual(st.list_records("consegne"), [got])
+
+    def test_ordine_di_inserimento_stabile_dopo_update(self):
+        for i in range(1, 7):
+            st.insert_record("consegne", consegna(f"c{i}"))
+        for cid in ("c1", "c1", "c3", "c1"):
+            st.update_record("consegne", cid, {"note": "x"})
+        self.assertEqual([c["id"] for c in st.list_records("consegne")],
+                         ["c1", "c2", "c3", "c4", "c5", "c6"])
+        st.insert_record("squadre", squadra("s1"))
+        st.insert_record("squadre", squadra("s2", nome="B"))
+        st.update_record("squadre", "s1", {"nome": "A2"})
+        self.assertEqual([s["id"] for s in st.list_records("squadre")], ["s1", "s2"])
+
+    def test_giornata_ordine_dopo_rimozione_e_nuova_assegnazione(self):
+        for c in ("c1", "c2", "c3", "c4"):
+            st.insert_record("consegne", consegna(c))
+        st.insert_record("giornate", giornata(consegneIds=["c1", "c2", "c3"]))
+        st.giornata_rimuovi("g1", "c2")
+        g = st.giornata_assegna("g1", ["c4", "c2"])
+        self.assertEqual(g["consegneIds"], ["c1", "c3", "c4", "c2"])
+        self.assertEqual(st.list_records("giornate")[0]["consegneIds"], ["c1", "c3", "c4", "c2"])
+
+    def test_list_giornate_con_molte_consegne_e_filtri(self):
+        ids = [f"c{i:03d}" for i in range(60)]
+        st.insert_records("consegne", [consegna(i) for i in ids])
+        st.insert_record("giornate", giornata("g1", consegneIds=ids))
+        st.insert_record("giornate", giornata("g2", nid="n2"))
+        self.assertEqual(st.get_record("giornate", "g1")["consegneIds"], ids)
+        self.assertEqual([g["id"] for g in st.list_records("giornate", {"negozio_id": "n2"})], ["g2"])
+        self.assertEqual(st.list_records("giornate", {"negozio_id": "n2"})[0]["consegneIds"], [])
+
     # ── meta ───────────────────────────────────────────────────────────────────
 
     def test_meta(self):
@@ -436,6 +586,73 @@ class StorageContract(unittest.TestCase):
         self.assertEqual(st.get_meta("schema_version"), 3)
         st.set_meta("migrazione", {"ok": True, "n": [1, 2]})
         self.assertEqual(st.get_meta("migrazione"), {"ok": True, "n": [1, 2]})
+
+
+@unittest.skipIf(BACKEND == "json", "specifico dei backend SQL")
+class SqlSpecific(unittest.TestCase):
+
+    def setUp(self):
+        st.init_storage_v2()
+        st._test_reset()
+
+    def test_init_idempotente_non_perde_dati(self):
+        st.insert_record("negozi", {"id": "n1", "nome": "N1"})
+        st.init_storage_v2()
+        st.init_storage_v2()
+        self.assertEqual(st.get_record("negozi", "n1")["nome"], "N1")
+
+    def test_reset_rifiutato_se_db_non_di_test(self):
+        st.insert_record("negozi", {"id": "n1", "nome": "N1"})
+        old = os.environ["DB_NAME"]
+        os.environ["DB_NAME"] = "gestione_consegne"
+        try:
+            with self.assertRaises(st.StorageError):
+                st._test_reset()
+        finally:
+            os.environ["DB_NAME"] = old
+        self.assertIsNotNone(st.get_record("negozi", "n1"))                   # dati intatti
+
+    def test_connessione_persa_solleva_storage_error(self):
+        st.insert_record("negozi", {"id": "n1", "nome": "N1"})
+        old = os.environ.get("DB_PORT")
+        os.environ["DB_PORT"] = "1"                                           # nessun server in ascolto
+        try:
+            with self.assertRaises(st.StorageError):
+                st.list_records("negozi")
+            with self.assertRaises(st.StorageError):
+                st.insert_record("negozi", {"id": "n2", "nome": "N2"})
+        finally:
+            if old is None:
+                os.environ.pop("DB_PORT", None)
+            else:
+                os.environ["DB_PORT"] = old
+        self.assertEqual([n["id"] for n in st.list_records("negozi")], ["n1"])
+
+    def test_backup_now_non_fa_nulla_e_non_fallisce(self):
+        self.assertTrue(st.backup_now())
+
+    def test_errore_in_transazione_non_lascia_scritture_parziali(self):
+        st.insert_record("negozi", {"id": "n1", "nome": "N1"})
+        st.insert_record("consegne", consegna("c1"))
+        with self.assertRaises(st.NotFoundError):                             # giornata con consegna inesistente
+            st.insert_record("giornate", giornata(consegneIds=["c1", "c_nope"]))
+        self.assertEqual(st.list_records("giornate"), [])                     # nemmeno la giornata esiste
+
+    def test_scritture_concorrenti_su_record_diversi(self):
+        st.insert_record("negozi", {"id": "n1", "nome": "N1"})
+        errors = []
+
+        def worker(i):
+            try:
+                for j in range(5):
+                    st.insert_record("consegne", consegna(f"c{i}_{j}"))
+            except Exception as e:                                            # pragma: no cover
+                errors.append(e)
+        ts = [threading.Thread(target=worker, args=(i,)) for i in range(8)]
+        [t.start() for t in ts]
+        [t.join() for t in ts]
+        self.assertEqual(errors, [])
+        self.assertEqual(len(st.list_records("consegne")), 40)
 
 
 @unittest.skipUnless(BACKEND == "json", "specifico del backend json")
