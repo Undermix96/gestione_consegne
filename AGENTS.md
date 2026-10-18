@@ -466,7 +466,7 @@ In V2 `read_data()`/`write_data()` **non sono più usate dal server**: restano s
 ### Collezioni V2 🚧
 `consegne`, `giornate`, `squadre`, `negozi`, `tipi_account`, `utenti` (+ tabella di join `giornata_consegne` sui backend SQL).
 
-### Interfaccia pubblica V2 🚧 (implementata per json e PostgreSQL — fase 1, passi 1a/1b)
+### Interfaccia pubblica V2 🚧 (implementata per json, PostgreSQL e MySQL — fase 1, passi 1a/1b/1c)
 ```python
 init_storage_v2()                       # il server V2 usa questa al posto di init_storage()
 list_records(collection, filters=None)  # ordine di inserimento; filtri di uguaglianza
@@ -504,12 +504,12 @@ Collezioni: `consegne`, `giornate`, `squadre`, `negozi`, `tipi_account`, `utenti
 ### Test (suite di contratto)
 `tests/test_storage_contract.py` contiene gli **stessi test per tutti i backend**: round-trip dei record, optimistic locking (anche sotto concorrenza, con una pausa forzata tra lettura e scrittura per rendere la corsa deterministica), unicità, riferimenti, tipi e lunghezze, filtri, ordine di inserimento, isolamento per negozio, operazioni sulle giornate, `insert_records` tutto-o-niente, metadati; più test specifici del backend json (persistenza, file corrotto, backup) e dei backend SQL (schema idempotente, connessione persa, reset rifiutato). La qualità dei test è stata verificata introducendo bug intenzionali nel codice (mutation check): ogni bug reale è stato rilevato.
 
-Tutto si esegue **in Docker** (sul server non serve Python). Database di test temporanei, separati dalla produzione:
+Tutto si esegue **in Docker** (sul server non serve Python). Database di test temporanei, separati dalla produzione (`TEST_BACKENDS="json postgres"` per limitare i backend provati):
 ```bash
 docker compose -f compose.test.yaml up --build --exit-code-from tests
 docker compose -f compose.test.yaml down
 ```
-`compose.test.yaml` avvia PostgreSQL 16 senza volumi né porte pubblicate e un container `tests` (immagine compilata dal `Dockerfile`, `tests/` montata in sola lettura) che lancia `tests/run_all.sh` su ogni backend elencato in `TEST_BACKENDS`. Con `TEST_VERBOSE=1` si ottiene l'elenco dei singoli test. Solo json, senza database:
+`compose.test.yaml` avvia PostgreSQL 16 e MySQL 8.4 senza volumi né porte pubblicate e un container `tests` (immagine compilata dal `Dockerfile`, `tests/` montata in sola lettura) che lancia `tests/run_all.sh` su ogni backend elencato in `TEST_BACKENDS`. Con `TEST_VERBOSE=1` si ottiene l'elenco dei singoli test. Solo json, senza database:
 ```bash
 docker run --rm -v "$PWD":/app:ro -w /app -e DB_BACKEND=json python:3.13-slim-bookworm python -B -m unittest discover -s tests
 ```
@@ -539,7 +539,7 @@ Il campo `extra` (JSONB in Postgres, JSON in MySQL) cattura eventuali campi aggi
 ⚠️ **Difetto noto della V1 sui backend SQL** (rilevato leggendo il codice, non eseguito su un DB reale): i campi camelCase noti vengono scritti in colonne snake_case ma **non vengono riconvertiti in lettura**. Le squadre tornano con `color_idx` invece di `colorIdx` (il frontend usa solo `colorIdx`: i colori andrebbero persi dopo un ricaricamento) e le consegne restituiscono sia le chiavi snake_case sia quelle camelCase salvate in `extra`. La V2 non ha questo difetto (le chiavi in uscita sono sempre camelCase). `main` non è stato modificato.
 
 ### Backend PostgreSQL V2 🚧 (passo 1b — implementato)
-Implementazione in `storage.py`: la classe `_SqlV2` contiene tutta la logica comune ai database SQL, `_PgV2` solo il dialetto (connessione, `JSONB`, mappatura errori, upsert dei metadati). Il backend MySQL (passo 1c) riusa `_SqlV2`.
+Implementazione in `storage.py`: la classe `_SqlV2` contiene tutta la logica comune ai database SQL, `_PgV2` solo il dialetto (connessione, `JSONB`, mappatura errori, upsert dei metadati). Il backend MySQL (`_MysqlV2`, passo 1c) usa la stessa base.
 - **Schema generato dalla specifica** (`_COLL` + `_COLS`): tabelle e colonne non sono scritte a mano due volte, quindi non possono divergere dal codice. Creato all'avvio con `CREATE TABLE IF NOT EXISTS` (**non aggiorna tabelle già esistenti**: il rifiuto di schemi V1 o più vecchi è il passo 1d).
 - **Una transazione per operazione**, con una connessione dedicata (come V1: robusta ai riavvii del DB), 2 tentativi di connessione.
 - **Optimistic locking atomico tramite lock di riga:** `SELECT ... FOR UPDATE`, confronto di `versione`, `UPDATE` nella stessa transazione. Il merge dei campi è lo stesso codice del backend json (`_apply_changes`).
@@ -550,11 +550,19 @@ Implementazione in `storage.py`: la classe `_SqlV2` contiene tutta la logica com
 - **Nessun backup applicativo** per i backend DB (`backup_now()` non fa nulla): usare gli strumenti del database (`pg_dump`).
 - La funzione di reset usata dai test rifiuta di agire se `DB_NAME` non termina con `_test`.
 
-### Backend MySQL V2 🚧 (passo 1c — da fare)
-Stessa logica comune (`_SqlV2`); da definire nel dialetto: colonne `JSON` restituite come testo, `BOOLEAN` come `TINYINT`, collation `utf8mb4_bin` sulle tabelle (confronti esatti, nessuna insensibilità a maiuscole/accenti), upsert dei metadati con `ON DUPLICATE KEY UPDATE`, indici sulle chiavi esterne creati automaticamente da InnoDB.
+### Backend MySQL V2 🚧 (passo 1c — implementato)
+Classe `_MysqlV2`: stessa logica comune di PostgreSQL (`_SqlV2`), cambia solo il dialetto. Verificato con la stessa suite di contratto di json e PostgreSQL.
+- **Collation `utf8mb4_0900_bin` su tutte le tabelle.** Il default di MySQL (`utf8mb4_0900_ai_ci`) ignora maiuscole, accenti e spazi finali: `Mario` = `mario` = `márió`, sia nei filtri sia nei vincoli di unicità, a differenza di json e PostgreSQL. `0900_bin` (senza padding) rende i confronti esatti; `username` resta senza distinzione di maiuscole solo tramite la colonna derivata `username_ci` (stessa regola degli altri backend).
+- **`LONGTEXT` per il testo libero** (un `TEXT` MySQL si ferma a 64 KB); **`JSON`** per liste ed `extra` (restituito come testo e decodificato); **`BOOLEAN`** è `TINYINT(1)` e viene riconvertito in `bool`; `seq` è `BIGINT AUTO_INCREMENT UNIQUE`.
+- **Isolamento `READ COMMITTED`** impostato a ogni connessione, come PostgreSQL (il default InnoDB è `REPEATABLE READ`). Ogni operazione parte con una lettura bloccante (`FOR UPDATE`/`FOR SHARE`), quindi oggi il comportamento osservabile è identico: l'impostazione è precauzionale (stesso modello di concorrenza, meno blocchi su intervalli di indice).
+- **Errori:** 1062 → `DuplicateError`; 1451/1452 → `IntegrityError`; errori sui dati (NULL non ammesso, valore troppo lungo/fuori intervallo) → `ValueError`; il resto → `StorageError`.
+- La colonna `username_ci` ha lunghezza `3 × 150`: `casefold()` può allungare una stringa fino a 3 volte (`ß` → `ss`).
+- Upsert dei metadati con `INSERT ... AS new ... ON DUPLICATE KEY UPDATE`; indici sulle chiavi esterne creati automaticamente da InnoDB.
+- **Prestazioni:** ogni operazione apre una connessione. Misurato in sviluppo (MySQL 8.0 locale): ~32 ms per operazione contro ~4 ms di PostgreSQL, quasi tutto handshake TLS e autenticazione. Irrilevante per l'uso previsto; riuso delle connessioni o disattivazione di TLS su rete Docker privata restano valutabili (punto aperto in §11).
+- Nessun backup applicativo (`mysqldump`/strumenti del DB). Provato su 8.0 in sviluppo; la suite in Docker usa `mysql:8.4`.
 
 ### Schema DB V2 🚧 (generato da `storage.py`, dialetto PostgreSQL)
-Per le installazioni V2 lo schema è **nuovo** (non si estendono le tabelle V1). Fa fede il codice: questo elenco è l'output di `_PgV2._ddl_statements()`.
+Per le installazioni V2 lo schema è **nuovo** (non si estendono le tabelle V1). Fa fede il codice: questo elenco è l'output di `_PgV2._ddl_statements()`. Su MySQL cambiano solo i tipi (`JSON`, `LONGTEXT`, `BIGINT AUTO_INCREMENT`), la clausola `DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin` e l'assenza degli `CREATE INDEX` espliciti.
 
 ```sql
 CREATE TABLE negozi (
@@ -586,7 +594,7 @@ CREATE TABLE utenti (
     creato_da VARCHAR(36),
     creato_il TEXT,
     ultimo_accesso TEXT,
-    username_ci VARCHAR(150) NOT NULL UNIQUE,
+    username_ci VARCHAR(450) NOT NULL UNIQUE,
     extra JSONB,
     FOREIGN KEY (negozio_id) REFERENCES negozi(id) ON DELETE RESTRICT,
     FOREIGN KEY (tipo_account_id) REFERENCES tipi_account(id) ON DELETE RESTRICT
@@ -651,7 +659,7 @@ CREATE INDEX ix_giornata_consegne_consegna ON giornata_consegne (consegna_id);
 - **`giornate.squadra` resta una stringa (nome)** in questa iterazione. Il passaggio a `giornate.squadra_id` (FK verso `squadre`) è la **fase 6** (§11).
 - Per il backend JSON la struttura dei record è la stessa (§8).
 - **Regole dello schema:** `ON DELETE RESTRICT` da `utenti` verso `tipi_account` e `negozi` e dalle tabelle operative verso `negozi`; `ON DELETE CASCADE` da `giornata_consegne` verso giornate e consegne; `negozio_id` `NOT NULL` sulle tabelle operative; indici sulle chiavi esterne; `giornata_consegne` senza la colonna `completata` (non usata).
-- `seq` serve solo a ordinare per inserimento: non esce mai dallo storage. `username_ci` è una colonna interna derivata, anch'essa mai restituita.
+- `seq` serve solo a ordinare per inserimento: non esce mai dallo storage. `username_ci` è una colonna interna derivata (`casefold(username)`, lunga 3 × 150), anch'essa mai restituita.
 - Lunghezze: `VARCHAR(n)` solo per chiavi e campi indicizzati (`id`/riferimenti 36, `username` 150, `tipi_account.nome` 255, `password_hash` 64); il testo libero è `TEXT` senza limite.
 
 ### Retry e attesa DB
@@ -951,7 +959,7 @@ Questa sezione traccia l'avanzamento della V2 sul branch `v2-docker` (partito da
 | Fase | Contenuto | Stato |
 |------|-----------|-------|
 | 0 | Documentazione (`AGENTS.md`, `README.md`) | ✅ completata, in revisione |
-| 1 | `storage.py`: schema V2 e API per singolo record su json/mysql/postgres, con suite di test condivisa | 🔶 in corso — 1a ✅ (API, backend json, suite) · 1b ✅ (PostgreSQL, `compose.test.yaml`) · 1c MySQL ⬜ · 1d marcatore schema ⬜ · 1e documentazione finale ⬜ |
+| 1 | `storage.py`: schema V2 e API per singolo record su json/mysql/postgres, con suite di test condivisa | 🔶 in corso — 1a ✅ (API, backend json, suite) · 1b ✅ (PostgreSQL, `compose.test.yaml`) · 1c ✅ (MySQL) · 1d marcatore schema ⬜ · 1e documentazione finale ⬜ |
 | 2 | `server.py`: Challenge-Response, sessioni, endpoint REST, permessi, filtro `negozio_id`, `/api/stato`, creazione superadmin | ⬜ |
 | 3 | Frontend V2 (vedi metodo sotto) | ⬜ |
 | 4 | `migrate.py` | ⬜ |
@@ -977,11 +985,12 @@ Ogni fase è un commit separato (o gruppo di commit) rivisto prima di passare al
 | # | Punto | Fase |
 |---|-------|------|
 | 1 | ~~Firma dell'API di `storage.py`~~ definita e implementata per json (§6); da riconfermare a fine fase 1 | 1 |
-| 2 | ~~Vincoli SQL~~ deciso e applicato su PostgreSQL (§6); da applicare su MySQL in 1c | 1 |
+| 2 | ~~Vincoli SQL~~ deciso e applicato su PostgreSQL e MySQL (§6) | 1 |
 | 3 | Comportamento del server su `StorageError`: crash (V1: "2 tentativi poi crash") oppure risposta 500 mantenendo il server attivo | 1-2 |
 | 4 | Timestamp di polling per negozio invece che globali | 2 |
 | 5 | `migrate.py`: migrazione sullo stesso backend (in-place o su nuova destinazione), eventuali dati dell'era `dev` da preservare, rapporto con `import_data.py` (resta separato o viene assorbito) | 4 |
-| 6 | Ambiente di sviluppo Docker isolato dalla produzione (es. `compose.dev.yaml` con progetto, volume e porta separati) | prima della fase 1 |
+| 6 | Ambiente di sviluppo Docker isolato dalla produzione (es. `compose.dev.yaml` con progetto, volume e porta separati) | prima della fase 2 |
+| 7 | Connessione per operazione: ~32 ms su MySQL (TLS + autenticazione) contro ~4 ms su PostgreSQL. Valutare riuso delle connessioni o TLS disattivato su rete Docker privata | 2 |
 
 ---
 

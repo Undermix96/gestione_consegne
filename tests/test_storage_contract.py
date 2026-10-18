@@ -519,6 +519,25 @@ class StorageContract(unittest.TestCase):
         st.insert_record("utenti", utente("u2", "márió"))                     # diverso: nessun conflitto
         self.assertEqual([u["id"] for u in st.list_records("utenti", {"username": "MÁRIÓ"})], ["u2"])
 
+    def test_username_casefold_che_si_allunga(self):
+        st.insert_record("utenti", utente("u1", "ß" * 75))                    # casefold → "ss" * 75
+        with self.assertRaises(st.DuplicateError):
+            st.insert_record("utenti", utente("u2", "SS" * 75))
+        st.insert_record("utenti", utente("u3", "ß" * 150))                   # casefold lungo 300: ammesso
+        self.assertEqual([u["id"] for u in st.list_records("utenti", {"username": "SS" * 150})], ["u3"])
+
+    def test_spazi_finali_e_confronti_esatti(self):
+        st.insert_record("utenti", utente("u1", "mario"))
+        st.insert_record("utenti", utente("u2", "mario "))                    # diverso: nessun conflitto
+        self.assertEqual([u["id"] for u in st.list_records("utenti", {"username": "mario "})], ["u2"])
+        st.insert_record("consegne", consegna("c1", citta="Vicenza"))
+        self.assertEqual(st.list_records("consegne", {"citta": "Vicenza "}), [])
+
+    def test_testo_molto_lungo(self):
+        big = "x" * 100_000                                                    # oltre i 64 KB di un TEXT MySQL
+        st.insert_record("consegne", consegna(note=big))
+        self.assertEqual(st.get_record("consegne", "c1")["note"], big)
+
     def test_nome_tipo_account_case_sensitive(self):
         st.insert_record("tipi_account", {"id": "t1", "nome": "Admin", "permessi": []})
         st.insert_record("tipi_account", {"id": "t2", "nome": "admin", "permessi": []})   # ammesso
@@ -617,10 +636,11 @@ class SqlSpecific(unittest.TestCase):
         old = os.environ.get("DB_PORT")
         os.environ["DB_PORT"] = "1"                                           # nessun server in ascolto
         try:
-            with self.assertRaises(st.StorageError):
-                st.list_records("negozi")
-            with self.assertRaises(st.StorageError):
-                st.insert_record("negozi", {"id": "n2", "nome": "N2"})
+            with self.assertLogs(st.log, level="ERROR"):                      # errore atteso: non stampato
+                with self.assertRaises(st.StorageError):
+                    st.list_records("negozi")
+                with self.assertRaises(st.StorageError):
+                    st.insert_record("negozi", {"id": "n2", "nome": "N2"})
         finally:
             if old is None:
                 os.environ.pop("DB_PORT", None)
@@ -679,10 +699,11 @@ class JsonSpecific(unittest.TestCase):
         path = os.path.join(self.tmp, "consegne.json")
         with open(path, "w") as f:
             f.write("{ questo non è json")
-        with self.assertRaises(st.StorageError):
-            st.list_records("consegne")
-        with self.assertRaises(st.StorageError):
-            st.insert_record("consegne", consegna("c2"))
+        with self.assertLogs(st.log, level="ERROR"):                          # errore atteso: non stampato
+            with self.assertRaises(st.StorageError):
+                st.list_records("consegne")
+            with self.assertRaises(st.StorageError):
+                st.insert_record("consegne", consegna("c2"))
         with open(path) as f:
             self.assertEqual(f.read(), "{ questo non è json")                 # intatto
 

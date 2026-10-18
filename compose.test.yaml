@@ -1,4 +1,4 @@
-# Suite di test di storage.py su tutti i backend, con database TEMPORANEI.
+# Suite di test di storage.py su tutti i backend (json, PostgreSQL, MySQL), con database TEMPORANEI.
 #
 #   docker compose -f compose.test.yaml up --build --exit-code-from tests
 #   docker compose -f compose.test.yaml down        # pulizia (nessun dato da conservare)
@@ -9,13 +9,15 @@
 # - il nome del database finisce per "_test": la suite rifiuta di svuotare qualsiasi altro database
 # - il codice dell'app e' quello dell'immagine appena compilata; tests/ e' montata in sola lettura
 #
-# Opzioni: TEST_VERBOSE=1 per l'elenco dei singoli test.
+# Opzioni: TEST_VERBOSE=1 per l'elenco dei singoli test;
+#          TEST_BACKENDS="json postgres" (o solo uno) per limitare i backend provati.
 name: gestione-consegne-test
 
 services:
   postgres:
     image: postgres:16-alpine
-    command: ["postgres", "-c", "fsync=off"]      # solo per i test: piu' veloce
+    # solo per i test: piu' veloce e senza il rumore dei vincoli violati di proposito
+    command: ["postgres", "-c", "fsync=off", "-c", "log_min_messages=fatal"]
     environment:
       POSTGRES_DB: gestione_consegne_test
       POSTGRES_USER: test
@@ -28,17 +30,35 @@ services:
       timeout: 3s
       retries: 30
 
+  mysql:
+    image: mysql:8.4
+    command: ["--skip-log-bin", "--innodb-flush-log-at-trx-commit=0"]   # solo per i test
+    environment:
+      MYSQL_ROOT_PASSWORD: test
+      MYSQL_DATABASE: gestione_consegne_test
+      MYSQL_USER: test
+      MYSQL_PASSWORD: test
+    tmpfs:
+      - /var/lib/mysql
+    healthcheck:
+      # via TCP: durante l'inizializzazione il server temporaneo ascolta solo sul socket
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -utest -ptest --silent"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+
   tests:
     build: .
     depends_on:
       postgres:
         condition: service_healthy
+      mysql:
+        condition: service_healthy
     command: ["sh", "tests/run_all.sh"]
     environment:
-      TEST_BACKENDS: "json postgres"
+      TEST_BACKENDS: "${TEST_BACKENDS:-json postgres mysql}"
       TEST_VERBOSE: "${TEST_VERBOSE:-0}"
       PYTHONDONTWRITEBYTECODE: "1"
-      DB_HOST: postgres
       DB_NAME: gestione_consegne_test
       DB_USER: test
       DB_PASSWORD: test

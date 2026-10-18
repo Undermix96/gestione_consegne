@@ -1097,7 +1097,9 @@ class _SqlV2:
     """
     T_ID = "VARCHAR(36)"
     T_JSON = None
+    T_TEXT = "TEXT"          # testo libero senza limite
     SEQ_DEF = None
+    TABLE_OPTS = ""          # opzioni di tabella (charset/collation per MySQL)
     FOR_UPDATE = " FOR UPDATE"
     FOR_SHARE = " FOR SHARE"
     _TABLE_ORDER = ["negozi", "tipi_account", "utenti", "consegne", "giornate", "squadre"]
@@ -1162,7 +1164,7 @@ class _SqlV2:
         if tipo == "json":
             return self.T_JSON
         n = _MAXLEN.get(f"{name}.{field}") or _MAXLEN.get(field)
-        return f"VARCHAR({n})" if n else "TEXT"
+        return f"VARCHAR({n})" if n else self.T_TEXT
 
     def _ddl_statements(self):
         stmts = []
@@ -1173,7 +1175,9 @@ class _SqlV2:
                 notnull = field in spec["mandatory"] or (field == "negozio_id" and spec["tenant"])
                 lines.append(f"{col} {self._sqltype(name, field, tipo)}{' NOT NULL' if notnull else ''}")
             for f in spec["ci"]:
-                lines.append(f"{f}_ci {self._sqltype(name, f, 'text')} NOT NULL UNIQUE")
+                # casefold() puo' allungare una stringa fino a 3 volte (es. 'ß' → 'ss', 'ΐ' → 3 caratteri)
+                n = (_MAXLEN.get(f"{name}.{f}") or _MAXLEN.get(f)) * 3
+                lines.append(f"{f}_ci VARCHAR({n}) NOT NULL UNIQUE")
             if spec["versioned"]:
                 lines.append("versione INTEGER NOT NULL DEFAULT 1")
             lines.append(f"extra {self.T_JSON}")
@@ -1182,15 +1186,16 @@ class _SqlV2:
                     lines.append(f"UNIQUE ({t.fieldcol[f]})")
             for f, target in spec["fks"].items():
                 lines.append(f"FOREIGN KEY ({t.fieldcol[f]}) REFERENCES {target}(id) ON DELETE RESTRICT")
-            stmts.append(f"CREATE TABLE IF NOT EXISTS {name} (\n    " + ",\n    ".join(lines) + "\n)")
+            stmts.append(f"CREATE TABLE IF NOT EXISTS {name} (\n    " + ",\n    ".join(lines)
+                         + f"\n){self.TABLE_OPTS}")
         stmts.append(
             f"CREATE TABLE IF NOT EXISTS giornata_consegne (\n"
             f"    giornata_id {self.T_ID} NOT NULL,\n    consegna_id {self.T_ID} NOT NULL,\n"
             f"    ordine INTEGER NOT NULL,\n    PRIMARY KEY (giornata_id, consegna_id),\n"
             f"    FOREIGN KEY (giornata_id) REFERENCES giornate(id) ON DELETE CASCADE,\n"
-            f"    FOREIGN KEY (consegna_id) REFERENCES consegne(id) ON DELETE CASCADE\n)")
+            f"    FOREIGN KEY (consegna_id) REFERENCES consegne(id) ON DELETE CASCADE\n){self.TABLE_OPTS}")
         stmts.append(f"CREATE TABLE IF NOT EXISTS meta (\n    chiave VARCHAR(100) PRIMARY KEY,\n"
-                     f"    valore {self.T_JSON} NOT NULL\n)")
+                     f"    valore {self.T_JSON} NOT NULL\n){self.TABLE_OPTS}")
         return stmts + self._extra_ddl()
 
     def _init_schema(self):
@@ -1483,6 +1488,55 @@ class _PgV2(_SqlV2):
         return StorageError(f"Errore database: {msg}")
 
 
+
+class _MysqlV2(_SqlV2):
+    """MySQL (mysql-connector-python). Stessa logica comune di PostgreSQL.
+
+    Differenze gestite dal dialetto:
+    - collation `utf8mb4_0900_bin` (NO PAD): confronti esatti. Il default di MySQL
+      (`utf8mb4_0900_ai_ci`) ignora maiuscole, accenti e spazi finali e darebbe risultati
+      diversi da json e PostgreSQL (unicità e filtri);
+    - colonne JSON restituite come testo; BOOLEAN come TINYINT(1) (convertito in bool);
+    - testo libero LONGTEXT (TEXT si fermerebbe a 64 KB);
+    - isolamento READ COMMITTED come PostgreSQL (il default InnoDB è REPEATABLE READ);
+    - le chiavi esterne creano da sole l'indice; upsert dei metadati con ON DUPLICATE KEY.
+    """
+    T_JSON = "JSON"
+    T_TEXT = "LONGTEXT"
+    SEQ_DEF = "BIGINT NOT NULL AUTO_INCREMENT UNIQUE"
+    TABLE_OPTS = " DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin"
+
+    def _connect(self):
+        conn = _mysql_connect()
+        cur = conn.cursor()
+        cur.execute("SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED")
+        cur.close()
+        return conn
+
+    def _adapt_json(self, obj):
+        return json.dumps(obj, ensure_ascii=False)
+
+    def _parse_json(self, v):
+        if isinstance(v, (bytes, bytearray)):
+            v = v.decode("utf-8")
+        return json.loads(v)
+
+    def _upsert_meta(self, cur, key, value):
+        cur.execute("INSERT INTO meta (chiave, valore) VALUES (%s, %s) AS new "
+                    "ON DUPLICATE KEY UPDATE valore = new.valore", (key, self._adapt_json(value)))
+
+    def _map_error(self, e):
+        errno = getattr(e, "errno", None)
+        msg = (getattr(e, "msg", None) or str(e)).strip().splitlines()[0]
+        if errno == 1062:
+            return DuplicateError(msg)
+        if errno in (1451, 1452):
+            return IntegrityError(msg)
+        if errno in (1048, 1264, 1265, 1292, 1366, 1406):
+            return ValueError(msg)
+        return StorageError(f"Errore database: {msg}")
+
+
 # ─── API PUBBLICA V2 ─────────────────────────────────────────────────────────
 
 _v2 = None
@@ -1496,7 +1550,7 @@ def init_storage_v2():
     elif BACKEND == "postgres":
         _v2 = _PgV2()
     elif BACKEND == "mysql":
-        raise NotImplementedError("Backend V2 'mysql' non ancora implementato (passo 1c)")
+        _v2 = _MysqlV2()
     else:
         raise ValueError(f"DB_BACKEND non valido: '{BACKEND}'. Valori accettati: json, mysql, postgres")
     log.info(f"[STORAGE] Backend V2 attivo: {BACKEND}")
