@@ -168,12 +168,14 @@ Per portare i dati esistenti (V1) allo schema V2 è prevista la **migrazione con
 ```
 gestione_consegne/
 ├── server.py               # Server HTTP e logica backend (V2: auth, sessioni, REST, permessi)
-├── storage.py              # Astrazione backend dati (json/mysql/postgres)
+├── storage.py              # Astrazione backend dati (json/mysql/postgres): V1 legacy + V2 per singolo record ✅
 ├── import_data.py          # Script importazione one-shot da dati.json legacy
 ├── migrate.py              # 🚧 V2: migrazione V1→V2 e tra backend (non ancora presente)
 ├── requirements.txt        # Dipendenze Python (mysql-connector, psycopg2)
 ├── Dockerfile              # Immagine Docker
 ├── compose.yaml            # Orchestrazione container e profili DB
+├── compose.test.yaml       # 🚧 V2: database temporanei per i test dello storage (separato dalla produzione)
+├── tests/                  # 🚧 V2: suite di contratto di storage.py (non inclusa nell'immagine)
 ├── index.html              # Shell HTML: struttura, modali, nav
 │
 ├── css/
