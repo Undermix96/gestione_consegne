@@ -146,7 +146,7 @@ docker inspect --format='{{.State.Health.Status}}' gestione-consegne-app-1
 
 ### Migrazione dei dati V1 → V2 🚧
 
-Per portare i dati esistenti (V1) allo schema V2 è prevista la **migrazione con `migrate.py`**, che funzionerà con tutti e tre i backend (JSON, MySQL, PostgreSQL) sia come sorgente sia come destinazione. Lo script non è ancora disponibile (fase 4, `AGENTS.md` §11). **Non avviare la V2 su dati V1 senza migrazione.** Dopo la migrazione esiste solo il superadmin: gli altri utenti vanno creati dal pannello.
+Per portare i dati esistenti (V1) allo schema V2 è prevista la **migrazione con `migrate.py`**, che funzionerà con tutti e tre i backend (JSON, MySQL, PostgreSQL) sia come sorgente sia come destinazione. Lo script non è ancora disponibile (fase 4, `AGENTS.md` §11). **Il server V2 si rifiuta di partire** (con un messaggio nel log, senza modificare nulla) se trova dati V1 o uno schema non valido: con `restart: unless-stopped` Docker lo riavvia in ciclo finché non si migra o si usa un database/cartella dati nuovi. La migrazione scrive sempre su una destinazione nuova. Dopo la migrazione esiste solo il superadmin: gli altri utenti vanno creati dal pannello.
 
 ## 🛠️ Tecnologie
 

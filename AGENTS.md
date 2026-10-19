@@ -215,6 +215,7 @@ Protetto da file flag `/data/import_done`. Per i backend DB il container DB deve
 - **Istanza `app` unica, niente repliche:** sessioni e challenge sono in memoria del processo. Un riavvio del container disconnette tutti gli utenti (devono rifare il login).
 - **Primo avvio:** se non esiste il superadmin, il server lo crea (`superadmin` / `admin`, `primo_login = true`: cambio password obbligatorio). Vedi §5.
 - **Nessun file applicativo fuori da `storage.py`:** utenti, negozi e tipi account seguono lo stesso backend scelto con `DB_BACKEND` (nessun JSON "speciale" accanto al codice: il filesystem del container è in sola lettura).
+- **Dati V1 → il container V2 non parte:** `init_storage_v2()` rifiuta archivi V1 o schemi non validi (§6). Con `restart: unless-stopped` Docker riavvia il container in ciclo e il motivo compare nel log: si risolve migrando (`migrate.py`) o puntando a un archivio nuovo.
 - **Migrazione:** `migrate.py` (🚧, §11 fase 4) porta i dati V1 allo schema V2 e permette di passare da un backend all'altro. `import_data.py` resta lo strumento per il solo `dati.json` legacy Windows.
 - **Variabili d'ambiente:** nessuna nuova variabile prevista per la V2 (da riconfermare in fase 1/4).
 
@@ -468,7 +469,7 @@ In V2 `read_data()`/`write_data()` **non sono più usate dal server**: restano s
 
 ### Interfaccia pubblica V2 🚧 (implementata per json, PostgreSQL e MySQL — fase 1, passi 1a/1b/1c)
 ```python
-init_storage_v2()                       # il server V2 usa questa al posto di init_storage()
+init_storage_v2(ignore_migration=False) # il server V2 usa questa al posto di init_storage(); verifica lo schema
 list_records(collection, filters=None)  # ordine di inserimento; filtri di uguaglianza
 get_record(collection, id)              # → dict | None
 insert_record(collection, record)       # `id` fornito dal chiamante; versione=1 dove prevista
@@ -478,12 +479,12 @@ delete_record(collection, id)           # → True | False (non esisteva)
 giornata_assegna(giornata_id, consegna_ids)       # aggiunge in coda, idempotente
 giornata_rimuovi(giornata_id, consegna_id)        # idempotente
 giornata_riordina(giornata_id, ordered_ids)       # permutazione esatta
-get_meta(key, default=None) / set_meta(key, value)   # schema_version, flag migrazione
+get_meta(key, default=None) / set_meta(key, value)   # metadati; chiavi riservate: schema_version, migrazione_in_corso
 backup_now()                            # snapshot immediato (json); no-op per i backend DB
 ```
 Collezioni: `consegne`, `giornate`, `squadre`, `negozi`, `tipi_account`, `utenti`. La specifica (campi obbligatori, default, unicità, riferimenti) è dichiarata una sola volta nel codice (`_COLL`) e vale per tutti i backend.
 
-**Eccezioni** (tutte derivano da `StorageError`; il server le traduce in HTTP): `ConflictError` → 409, `NotFoundError` → 404, `DuplicateError`, `IntegrityError`. Gli errori di programmazione (collezione sconosciuta, campo obbligatorio mancante, campo non modificabile) sono `ValueError`. Il comportamento del server su `StorageError` generico (crash o 500) resta un punto aperto (§11).
+**Eccezioni** (tutte derivano da `StorageError`; il server le traduce in HTTP): `ConflictError` → 409, `NotFoundError` → 404, `DuplicateError`, `IntegrityError`; `SchemaError` solo all'avvio (vedi sotto). Gli errori di programmazione (collezione sconosciuta, campo obbligatorio mancante, campo non modificabile) sono `ValueError`. Il comportamento del server su `StorageError` generico (crash o 500) resta un punto aperto (§11).
 
 **Semantica comune a tutti i backend:**
 - **`None` = campo assente.** Un valore `None` non viene memorizzato né restituito; `update_record(..., {"campo": None})` rimuove il campo. (Su SQL, NULL ≡ chiave mancante: è ciò che rende identici i risultati.)
@@ -502,7 +503,7 @@ Collezioni: `consegne`, `giornate`, `squadre`, `negozi`, `tipi_account`, `utenti
 - **Ordine:** `list_records` restituisce sempre l'ordine di inserimento, anche dopo gli update.
 
 ### Test (suite di contratto)
-`tests/test_storage_contract.py` contiene gli **stessi test per tutti i backend**: round-trip dei record, optimistic locking (anche sotto concorrenza, con una pausa forzata tra lettura e scrittura per rendere la corsa deterministica), unicità, riferimenti, tipi e lunghezze, filtri, ordine di inserimento, isolamento per negozio, operazioni sulle giornate, `insert_records` tutto-o-niente, metadati; più test specifici del backend json (persistenza, file corrotto, backup) e dei backend SQL (schema idempotente, connessione persa, reset rifiutato). La qualità dei test è stata verificata introducendo bug intenzionali nel codice (mutation check): ogni bug reale è stato rilevato.
+`tests/test_storage_contract.py` contiene gli **stessi test per tutti i backend**: round-trip dei record, optimistic locking (anche sotto concorrenza, con una pausa forzata tra lettura e scrittura per rendere la corsa deterministica), unicità, riferimenti, tipi e lunghezze, filtri, ordine di inserimento, isolamento per negozio, operazioni sulle giornate, `insert_records` tutto-o-niente, metadati; i test del controllo dello schema all'avvio (marcatore, dati V1, versione, flag di migrazione, colonne e tabelle alterate: sempre con verifica che nulla sia stato modificato), più test specifici del backend json (persistenza, file corrotto, backup) e dei backend SQL (schema idempotente, connessione persa, reset rifiutato). La qualità dei test è stata verificata introducendo bug intenzionali nel codice (mutation check): ogni bug reale è stato rilevato.
 
 Tutto si esegue **in Docker** (sul server non serve Python). Database di test temporanei, separati dalla produzione (`TEST_BACKENDS="json postgres"` per limitare i backend provati):
 ```bash
@@ -514,6 +515,28 @@ docker compose -f compose.test.yaml down
 docker run --rm -v "$PWD":/app:ro -w /app -e DB_BACKEND=json python:3.13-slim-bookworm python -B -m unittest discover -s tests
 ```
 ⚠️ Con i backend DB la suite **svuota le tabelle**: rifiuta di agire se `DB_NAME` non termina con `_test`, ma non va mai puntata a un database di produzione. Solo libreria standard, nessuna dipendenza aggiuntiva.
+
+### Controllo dello schema all'avvio 🚧 (passo 1d)
+`init_storage_v2()` decide cosa fare **prima di creare o modificare qualsiasi cosa**; se l'archivio non è uno schema V2 valido solleva `SchemaError` e **non lascia alcun backend attivo** (le operazioni successive danno `StorageError`). Marcatore: `schema_version = 2` nei metadati (`meta.json` o tabella `meta`).
+
+| Situazione trovata | Esito |
+|---|---|
+| Archivio vuoto (nessun dato, nessuna tabella) | Viene inizializzato e marcato `schema_version = 2` |
+| Marcatore 2 e struttura valida | Si parte; nessuna modifica |
+| Dati V1 senza marcatore (file json non vuoti; tabelle V1 su SQL) | `SchemaError` → eseguire `migrate.py` o usare un archivio nuovo |
+| Dati V2 senza marcatore | `SchemaError` |
+| Marcatore di altra versione | `SchemaError` |
+| Flag `migrazione_in_corso` attivo | `SchemaError` (salvo `ignore_migration=True`, riservato a `migrate.py`) |
+| SQL: tabella mancante, o colonne diverse da quelle attese (mancanti **o in più**) | `SchemaError` con le colonne indicate |
+| File di metadati json illeggibile | `StorageError` (non è uno `SchemaError`), file intatto |
+
+Regole e limiti:
+- **Mai una modifica automatica:** nessun `ALTER`, nessuna "riparazione". Per ripartire da zero serve un database nuovo o una cartella dati nuova.
+- **Tabelle V1 vuote su SQL → rifiutate** comunque (le tabelle sono incompatibili e `CREATE TABLE IF NOT EXISTS` non le correggerebbe). **File json V1 vuoti → accettati** (equivalgono a un archivio vuoto).
+- **Si verificano i nomi delle colonne, non i tipi** né il contenuto dei record (su json non c'è schema da verificare).
+- **MySQL:** il DDL non è transazionale; un'inizializzazione interrotta a metà lascia uno schema parziale, che al riavvio viene rifiutato (eliminare le tabelle e ripartire). Su PostgreSQL schema e marcatore sono nella stessa transazione.
+- Il reset usato dai test **conserva** il marcatore.
+- Con `restart: unless-stopped` un container che trova dati V1 **si riavvia in ciclo** finché non si interviene; il motivo è nel log. È voluto: meglio un server fermo che uno che serve dati incompatibili.
 
 ### Backend JSON
 File separati in `DATA_DIR`, ciascuno **un array di record**: `consegne.json`, `giornate.json`, `squadre.json` e 🚧 V2 `negozi.json`, `tipi_account.json`, `utenti.json`, più `meta.json` (metadati). Formato invariato rispetto a V1: i file V1 restano leggibili.
@@ -959,7 +982,7 @@ Questa sezione traccia l'avanzamento della V2 sul branch `v2-docker` (partito da
 | Fase | Contenuto | Stato |
 |------|-----------|-------|
 | 0 | Documentazione (`AGENTS.md`, `README.md`) | ✅ completata, in revisione |
-| 1 | `storage.py`: schema V2 e API per singolo record su json/mysql/postgres, con suite di test condivisa | 🔶 in corso — 1a ✅ (API, backend json, suite) · 1b ✅ (PostgreSQL, `compose.test.yaml`) · 1c ✅ (MySQL) · 1d marcatore schema ⬜ · 1e documentazione finale ⬜ |
+| 1 | `storage.py`: schema V2 e API per singolo record su json/mysql/postgres, con suite di test condivisa | 🔶 in corso — 1a ✅ (API, backend json, suite) · 1b ✅ (PostgreSQL, `compose.test.yaml`) · 1c ✅ (MySQL) · 1d ✅ (marcatore e controllo schema) · 1e documentazione finale ⬜ |
 | 2 | `server.py`: Challenge-Response, sessioni, endpoint REST, permessi, filtro `negozio_id`, `/api/stato`, creazione superadmin | ⬜ |
 | 3 | Frontend V2 (vedi metodo sotto) | ⬜ |
 | 4 | `migrate.py` | ⬜ |
@@ -979,6 +1002,7 @@ Ogni fase è un commit separato (o gruppo di commit) rivisto prima di passare al
 - **Sorgente e destinazione**: ciascuno dei tre backend (json, mysql, postgres), in qualsiasi combinazione, selezionabili da configurazione/argomenti (interfaccia da definire).
 - Trasformazione V1 → V2: crea il negozio "Negozio principale"; aggiunge `negozio_id` e `versione: 1` a tutte le consegne, giornate e squadre; crea il superadmin (`is_superadmin = true`, password di default `admin` con hash pre-calcolato, `primo_login = true`); crea `tipi_account` vuoto. Gli ID V1 non vengono modificati; `giornate.squadra` resta stringa.
 - **Protezioni** (proposte): backup completo della sorgente prima di scrivere; blocco contro la doppia esecuzione (file flag nel volume o tabella `migrazioni`); sorgente mai modificata; verifica finale con conteggio record per collezione tra sorgente e destinazione.
+- **La destinazione deve essere un archivio vuoto** (database nuovo o cartella dati nuova): il controllo dello schema (§6) impedisce di migrare "sul posto" sopra tabelle o file V1. `init_storage_v2()` marca la destinazione V2 appena la inizializza; subito dopo `migrate.py` imposta il flag `migrazione_in_corso` e lo toglie solo a verifica conclusa: una migrazione interrotta lascia così una destinazione che il server si rifiuta di avviare. La sorgente V1 si legge con le funzioni V1 (`read_data`).
 - Dopo la migrazione nessun utente oltre al superadmin esiste: vanno creati dal pannello (§9).
 
 ### Punti aperti (da decidere prima o durante la fase indicata)
@@ -988,9 +1012,10 @@ Ogni fase è un commit separato (o gruppo di commit) rivisto prima di passare al
 | 2 | ~~Vincoli SQL~~ deciso e applicato su PostgreSQL e MySQL (§6) | 1 |
 | 3 | Comportamento del server su `StorageError`: crash (V1: "2 tentativi poi crash") oppure risposta 500 mantenendo il server attivo | 1-2 |
 | 4 | Timestamp di polling per negozio invece che globali | 2 |
-| 5 | `migrate.py`: migrazione sullo stesso backend (in-place o su nuova destinazione), eventuali dati dell'era `dev` da preservare, rapporto con `import_data.py` (resta separato o viene assorbito) | 4 |
+| 5 | `migrate.py`: ~~migrazione in-place~~ esclusa dal controllo dello schema (la destinazione è sempre nuova, §11); restano da decidere eventuali dati dell'era `dev` da preservare e il rapporto con `import_data.py` (resta separato o viene assorbito) | 4 |
 | 6 | Ambiente di sviluppo Docker isolato dalla produzione (es. `compose.dev.yaml` con progetto, volume e porta separati) | prima della fase 2 |
 | 7 | Connessione per operazione: ~32 ms su MySQL (TLS + autenticazione) contro ~4 ms su PostgreSQL. Valutare riuso delle connessioni o TLS disattivato su rete Docker privata | 2 |
+| 8 | Il server V2 deve tradurre `SchemaError` in un errore di avvio leggibile (messaggio nel log e uscita con codice diverso da 0) | 2 |
 
 ---
 

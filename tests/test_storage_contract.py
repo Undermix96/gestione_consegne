@@ -597,14 +597,247 @@ class StorageContract(unittest.TestCase):
     # ── meta ───────────────────────────────────────────────────────────────────
 
     def test_meta(self):
-        self.assertIsNone(st.get_meta("schema_version"))
-        self.assertEqual(st.get_meta("schema_version", 0), 0)
-        st.set_meta("schema_version", 2)
-        self.assertEqual(st.get_meta("schema_version"), 2)
-        st.set_meta("schema_version", 3)
-        self.assertEqual(st.get_meta("schema_version"), 3)
+        self.assertIsNone(st.get_meta("chiave_prova"))
+        self.assertEqual(st.get_meta("chiave_prova", 0), 0)
+        st.set_meta("chiave_prova", 2)
+        self.assertEqual(st.get_meta("chiave_prova"), 2)
+        st.set_meta("chiave_prova", 3)
+        self.assertEqual(st.get_meta("chiave_prova"), 3)
         st.set_meta("migrazione", {"ok": True, "n": [1, 2]})
         self.assertEqual(st.get_meta("migrazione"), {"ok": True, "n": [1, 2]})
+        st.set_meta("nullo", None)                                            # null ≠ chiave mancante
+        self.assertIsNone(st.get_meta("nullo", "default"))
+        st.set_meta("testo", "abc")
+        self.assertEqual(st.get_meta("testo"), "abc")
+
+    def test_marcatore_di_schema_presente_e_reset_lo_conserva(self):
+        self.assertEqual(st.get_meta("schema_version"), st.SCHEMA_VERSION)
+        st.set_meta("altro", 1)
+        st._test_reset()
+        self.assertEqual(st.get_meta("schema_version"), st.SCHEMA_VERSION)
+        self.assertIsNone(st.get_meta("altro"))
+
+
+# ─── controllo dello schema all'avvio (passo 1d) ──────────────────────────────
+
+_SQL_TABLES = ["giornata_consegne", "giornate", "consegne", "squadre", "utenti",
+               "tipi_account", "negozi", "meta"]
+
+
+def _raw(statements):
+    """SQL grezzo sul database di test (solo backend SQL). Rifiuta DB che non finiscono per _test."""
+    assert os.environ.get("DB_NAME", "").endswith("_test")
+    conn = st._pg_connect() if BACKEND == "postgres" else st._mysql_connect()
+    try:
+        cur = conn.cursor()
+        out = None
+        for q in statements:
+            cur.execute(q)
+            if cur.description:
+                out = cur.fetchall()
+        conn.commit()
+        return out
+    finally:
+        conn.close()
+
+
+def _drop_all_sql():
+    drop = "DROP TABLE IF EXISTS " + ", ".join(_SQL_TABLES)
+    if BACKEND == "postgres":
+        return [drop + " CASCADE"]
+    return ["SET FOREIGN_KEY_CHECKS=0", drop, "SET FOREIGN_KEY_CHECKS=1"]
+
+
+class _GuardBase(unittest.TestCase):
+    """Base (senza test): preparazione degli stati di partenza e confronti per i test dello schema."""
+
+    V1_DATA = {
+        "consegne": [{"id": "c1", "nome": "Mario", "stato": "in_attesa", "articoli": []}],
+        "giornate": [{"id": "g1", "data": "2026-01-01", "squadra": "S", "consegneIds": ["c1"]}],
+        "squadre": [{"id": "s1", "nome": "S", "colorIdx": 2}],
+    }
+
+    def setUp(self):
+        self.tmp = None
+        st._v2 = None
+        if BACKEND == "json":
+            self.tmp = tempfile.mkdtemp(prefix="gc_test_")
+            st.DATA_DIR = self.tmp
+        else:
+            _raw(_drop_all_sql())
+
+    def tearDown(self):
+        st._v2 = None
+        if self.tmp:
+            shutil.rmtree(self.tmp, ignore_errors=True)
+        else:
+            _raw(_drop_all_sql())
+            st.init_storage_v2()                                              # schema V2 pulito per le classi successive
+
+    # ── stati di partenza e confronti ─────────────────────────────────────────
+    def _v1_state(self, with_data=True):
+        """Archivio V1 autentico: file scritti a mano (json) o funzioni V1 reali (SQL)."""
+        if BACKEND == "json":
+            for name, rows in self.V1_DATA.items():
+                with open(os.path.join(self.tmp, f"{name}.json"), "w", encoding="utf-8") as f:
+                    json.dump(rows if with_data else [], f)
+        else:
+            st.init_storage()
+            if with_data:
+                st.write_data(self.V1_DATA)
+
+    def _snapshot(self):
+        if BACKEND == "json":
+            snap = {}
+            for root, dirs, files in os.walk(self.tmp):
+                snap[os.path.relpath(root, self.tmp)] = "dir"
+                for fn in files:
+                    with open(os.path.join(root, fn), "rb") as f:
+                        snap[os.path.relpath(os.path.join(root, fn), self.tmp)] = f.read()
+            return snap
+        expr = "current_schema()" if BACKEND == "postgres" else "DATABASE()"
+        cols = _raw([f"SELECT table_name, column_name FROM information_schema.columns "
+                     f"WHERE table_schema = {expr} ORDER BY 1, 2"])
+        tables = sorted({r[0] if isinstance(r[0], str) else r[0].decode() for r in cols})
+        counts = {t: _raw([f"SELECT COUNT(*) FROM {t}"])[0][0] for t in tables}
+        return [(str(a), str(b)) for a, b in cols], counts
+
+    def _remove_marker(self):
+        if BACKEND == "json":
+            with open(os.path.join(self.tmp, "meta.json"), "w") as f:
+                json.dump({}, f)
+        else:
+            _raw(["DELETE FROM meta WHERE chiave = 'schema_version'"])
+
+    def _assert_rifiuta(self, *frammenti):
+        before = self._snapshot()
+        with self.assertRaises(st.SchemaError) as cm:
+            st.init_storage_v2()
+        for fr in frammenti:
+            self.assertIn(fr, str(cm.exception))
+        self.assertEqual(self._snapshot(), before, "l'archivio è stato modificato")
+        with self.assertRaises(st.StorageError):                              # nessun backend rimasto attivo
+            st.list_records("negozi")
+        return str(cm.exception)
+
+
+class SchemaGuard(_GuardBase):
+    """init_storage_v2() deve rifiutare, senza modificare nulla, ciò che non è uno schema V2 valido.
+    Casi comuni a tutti i backend."""
+
+    def test_archivio_vuoto_viene_inizializzato_e_marcato(self):
+        st.init_storage_v2()
+        self.assertEqual(st.get_meta("schema_version"), st.SCHEMA_VERSION)
+        st.insert_record("negozi", {"id": "n1", "nome": "N1"})
+        self.assertEqual(st.get_record("negozi", "n1")["nome"], "N1")
+
+    def test_riavvio_su_archivio_v2_valido_non_perde_dati(self):
+        st.init_storage_v2()
+        st.insert_record("negozi", {"id": "n1", "nome": "N1"})
+        for _ in range(3):
+            st.init_storage_v2()
+        self.assertEqual([n["id"] for n in st.list_records("negozi")], ["n1"])
+        self.assertEqual(st.get_meta("schema_version"), st.SCHEMA_VERSION)
+
+    def test_dati_v1_rifiutati_senza_modificare_nulla(self):
+        self._v1_state()
+        msg = self._assert_rifiuta("migrate.py")
+        self.assertIn("V1", msg)
+        if BACKEND != "json":
+            self.assertEqual(st.read_data()["consegne"][0]["id"], "c1")       # i dati V1 sono intatti
+
+    def test_marcatore_assente_con_dati_v2_rifiutato(self):
+        st.init_storage_v2()
+        st.insert_record("negozi", {"id": "n1", "nome": "N1"})
+        self._remove_marker()
+        self._assert_rifiuta("marcatore")
+
+    def test_versione_di_schema_sconosciuta_rifiutata(self):
+        st.init_storage_v2()
+        st.set_meta("schema_version", 3)
+        self._assert_rifiuta("3", "non supportata")
+
+    def test_migrazione_in_corso_blocca_l_avvio(self):
+        st.init_storage_v2()
+        st.insert_record("negozi", {"id": "n1", "nome": "N1"})
+        st.set_meta("migrazione_in_corso", True)
+        self._assert_rifiuta("migrazione", "migrate.py")
+        st.init_storage_v2(ignore_migration=True)                             # riservato a migrate.py
+        self.assertEqual(st.get_record("negozi", "n1")["nome"], "N1")
+        st.set_meta("migrazione_in_corso", False)
+        st.init_storage_v2()                                                  # flag spento: si parte
+
+    def test_dopo_un_errore_di_avvio_nessun_backend_resta_attivo(self):
+        st.init_storage_v2()
+        st.set_meta("schema_version", 99)
+        with self.assertRaises(st.SchemaError):
+            st.init_storage_v2()
+        with self.assertRaises(st.StorageError):
+            st.insert_record("negozi", {"id": "n1", "nome": "N1"})
+
+    def test_schema_error_e_uno_storage_error(self):
+        self.assertTrue(issubclass(st.SchemaError, st.StorageError))
+
+
+
+@unittest.skipUnless(BACKEND == "json", "specifico del backend json")
+class SchemaGuardJson(_GuardBase):
+
+    def test_file_v1_vuoti_equivalgono_ad_archivio_vuoto(self):
+        self._v1_state(with_data=False)
+        st.init_storage_v2()
+        self.assertEqual(st.get_meta("schema_version"), st.SCHEMA_VERSION)
+
+    def test_meta_corrotto_e_un_errore_di_storage_e_non_viene_toccato(self):
+        with open(os.path.join(self.tmp, "meta.json"), "w") as f:
+            f.write("{ non json")
+        before = self._snapshot()
+        with self.assertLogs(st.log, level="ERROR"):
+            with self.assertRaises(st.StorageError) as cm:
+                st.init_storage_v2()
+        self.assertNotIsInstance(cm.exception, st.SchemaError)
+        self.assertEqual(self._snapshot(), before)
+
+    def test_collezione_v2_mancante_viene_ricreata_vuota(self):
+        st.init_storage_v2()
+        st.insert_record("negozi", {"id": "n1", "nome": "N1"})
+        os.remove(os.path.join(self.tmp, "squadre.json"))
+        st.init_storage_v2()
+        self.assertEqual(st.list_records("squadre"), [])
+        self.assertEqual(len(st.list_records("negozi")), 1)
+
+
+@unittest.skipIf(BACKEND == "json", "specifico dei backend SQL")
+class SchemaGuardSql(_GuardBase):
+
+    def test_tabelle_v1_vuote_rifiutate(self):
+        self._v1_state(with_data=False)                                       # decisione: nessuna eccezione
+        self._assert_rifiuta("V1", "database nuovo")
+
+    def test_tabelle_v1_con_dati_indicano_le_righe(self):
+        self._v1_state()
+        msg = self._assert_rifiuta("V1")
+        self.assertIn("consegne: 1 righe", msg)
+
+    def test_colonna_mancante_rifiutata(self):
+        st.init_storage_v2()
+        _raw(["ALTER TABLE consegne DROP COLUMN note"])
+        self._assert_rifiuta("consegne", "mancano", "note")
+
+    def test_colonna_in_piu_rifiutata(self):
+        st.init_storage_v2()
+        _raw(["ALTER TABLE squadre ADD COLUMN colore_extra INTEGER"])
+        self._assert_rifiuta("squadre", "in più", "colore_extra")
+
+    def test_tabella_mancante_rifiutata(self):
+        st.init_storage_v2()
+        _raw(["DROP TABLE giornata_consegne"])
+        self._assert_rifiuta("incompleto", "giornata_consegne")
+
+    def test_tabella_meta_mancante_rifiutata(self):
+        st.init_storage_v2()
+        _raw(["DROP TABLE meta"])
+        self._assert_rifiuta("V1 o di uno schema sconosciuto")
 
 
 @unittest.skipIf(BACKEND == "json", "specifico dei backend SQL")

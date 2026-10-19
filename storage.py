@@ -25,7 +25,7 @@ Interfaccia pubblica V2 (accesso per singolo record) — vedi sezione "V2" in fo
   init_storage_v2(), list_records(), get_record(), insert_record(), insert_records(),
   update_record(), delete_record(), giornata_assegna/_rimuovi/_riordina(),
   get_meta(), set_meta(), backup_now()
-  Eccezioni: StorageError, ConflictError, NotFoundError, DuplicateError, IntegrityError
+  Eccezioni: StorageError, ConflictError, NotFoundError, DuplicateError, IntegrityError, SchemaError
 """
 
 import copy
@@ -599,6 +599,13 @@ class DuplicateError(StorageError):
 class IntegrityError(StorageError):
     """Violazione di integrità referenziale (riferimento inesistente o record ancora referenziato)."""
 
+class SchemaError(StorageError):
+    """L'archivio dati non è compatibile con la V2 (dati V1 non migrati, schema vecchio o alterato,
+    versione sconosciuta, migrazione interrotta). Sollevata all'avvio, PRIMA di modificare qualsiasi
+    cosa: il server non deve partire."""
+
+SCHEMA_VERSION = 2            # marcatore `schema_version` nei metadati (meta.json / tabella meta)
+
 
 # Specifica dichiarativa delle collezioni. Una sola fonte di verità per tutti i backend.
 #   versioned : ha il campo `versione` (gestito dallo storage)
@@ -808,17 +815,35 @@ class _JsonV2:
     poi riscritto sopra i dati.
     """
 
-    def __init__(self):
+    def __init__(self, ignore_migration=False):
         self._lock = threading.RLock()
         self._last_backup = 0.0
+        # Controlli PRIMA di creare o modificare qualsiasi file o cartella (un file illeggibile → StorageError)
+        meta = self._read_file(self._meta_path(), {}, dict)
+        version = meta.get("schema_version")
+        if version is None:
+            filled = [n for n in _COLL if self._read_file(self._path(n), [], list)]
+            if filled:
+                raise SchemaError(
+                    f"L'archivio dati contiene dati senza marcatore di schema V2 (collezioni non vuote: "
+                    f"{', '.join(filled)}). Probabile installazione V1 non migrata: eseguire migrate.py "
+                    f"oppure usare una cartella dati nuova. Nessun file è stato modificato.")
+        elif version != SCHEMA_VERSION:
+            raise SchemaError(f"Versione di schema {version!r} non supportata: questo server gestisce la "
+                              f"{SCHEMA_VERSION}. Nessun file è stato modificato.")
+        if meta.get("migrazione_in_corso") and not ignore_migration:
+            raise SchemaError("Migrazione dei dati in corso o interrotta (flag 'migrazione_in_corso'): "
+                              "completarla o annullarla con migrate.py. Nessun file è stato modificato.")
         os.makedirs(self._dir(), exist_ok=True)
         os.makedirs(os.path.join(self._dir(), "backup"), exist_ok=True)
         for name in _COLL:
             if not os.path.exists(self._path(name)):
                 self._write_file(self._path(name), [])
                 log.info(f"[STORAGE] Creato {self._path(name)} (vuoto)")
-        if not os.path.exists(self._meta_path()):
-            self._write_file(self._meta_path(), {})
+        if version is None:
+            meta["schema_version"] = SCHEMA_VERSION
+            self._write_file(self._meta_path(), meta)
+            log.info(f"[STORAGE] Archivio inizializzato (schema V{SCHEMA_VERSION})")
 
     # ── file ────────────────────────────────────────────────────────────────
     def _dir(self):              return DATA_DIR            # letto a ogni uso (testabile)
@@ -1059,7 +1084,7 @@ class _JsonV2:
         with self._lock:
             for name in _COLL:
                 self._write_file(self._path(name), [])
-            self._write_file(self._meta_path(), {})
+            self._write_file(self._meta_path(), {"schema_version": SCHEMA_VERSION})
             self._last_backup = 0.0
 
 
@@ -1104,9 +1129,13 @@ class _SqlV2:
     FOR_SHARE = " FOR SHARE"
     _TABLE_ORDER = ["negozi", "tipi_account", "utenti", "consegne", "giornate", "squadre"]
 
-    def __init__(self):
+    SCHEMA_EXPR = None       # espressione SQL dello schema corrente (dialetto)
+    _ALL_TABLES = ["negozi", "tipi_account", "utenti", "consegne", "giornate", "squadre",
+                   "giornata_consegne", "meta"]
+
+    def __init__(self, ignore_migration=False):
         self.T = {n: _Tbl(n) for n in _COLL}
-        self._init_schema()
+        self._init_schema(ignore_migration)
 
     # ── da implementare nel dialetto ───────────────────────────────────────
     def _connect(self):               raise NotImplementedError
@@ -1198,29 +1227,114 @@ class _SqlV2:
                      f"    valore {self.T_JSON} NOT NULL\n){self.TABLE_OPTS}")
         return stmts + self._extra_ddl()
 
-    def _init_schema(self):
+    def _connect_waiting(self):
         last = None
         for attempt in range(10):
             try:
-                conn = self._connect()
-                break
+                return self._connect()
             except Exception as e:
                 last = e
                 log.warning(f"[STORAGE] DB non pronto (tentativo {attempt+1}/10): {e}")
                 time.sleep(3)
-        else:
-            raise StorageError(f"Impossibile connettersi al database dopo 10 tentativi: {last}")
+        raise StorageError(f"Impossibile connettersi al database dopo 10 tentativi: {last}")
+
+    def _init_schema(self, ignore_migration=False):
+        """Database vuoto → crea lo schema V2 e il marcatore (stessa transazione dove il DB lo
+        consente). Database con tabelle → le verifica SOLO in lettura e rifiuta (SchemaError) se non
+        sono uno schema V2 valido: nessuna tabella viene mai modificata."""
+        conn = self._connect_waiting()
         try:
             cur = conn.cursor()
-            for stmt in self._ddl_statements():
-                cur.execute(stmt)
-            conn.commit()
-            log.info("[STORAGE] Schema V2 verificato/creato")
+            present = self._existing_tables(cur)
+            if not present:
+                for stmt in self._ddl_statements():
+                    cur.execute(stmt)
+                self._upsert_meta(cur, "schema_version", SCHEMA_VERSION)
+                conn.commit()
+                log.info(f"[STORAGE] Database inizializzato (schema V{SCHEMA_VERSION})")
+                return
+            self._check_existing(cur, present, ignore_migration)
+            log.info(f"[STORAGE] Schema V{SCHEMA_VERSION} verificato")
+        except StorageError:
+            self._safe_rollback(conn)
+            raise
         except Exception as e:
             self._safe_rollback(conn)
             raise self._map_error(e) from e
         finally:
-            conn.close()
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    @staticmethod
+    def _txt(v):
+        return v.decode("utf-8") if isinstance(v, (bytes, bytearray)) else v
+
+    def _existing_tables(self, cur):
+        cur.execute(f"SELECT table_name FROM information_schema.tables WHERE table_schema = {self.SCHEMA_EXPR}")
+        return {self._txt(r[0]).lower() for r in cur.fetchall()} & set(self._ALL_TABLES)
+
+    def _expected_columns(self, table):
+        if table == "giornata_consegne":
+            return {"giornata_id", "consegna_id", "ordine"}
+        if table == "meta":
+            return {"chiave", "valore"}
+        t = self.T[table]
+        cols = {"id", "seq", "extra"} | {c for _, c, _ in t.cols} | {f"{f}_ci" for f in t.spec["ci"]}
+        if t.spec["versioned"]:
+            cols.add("versione")
+        return cols
+
+    def _actual_columns(self, cur, table):
+        cur.execute("SELECT column_name FROM information_schema.columns "
+                    f"WHERE table_schema = {self.SCHEMA_EXPR} AND table_name = %s", (table,))
+        return {self._txt(r[0]).lower() for r in cur.fetchall()}
+
+    def _meta_value(self, cur, key):
+        cur.execute("SELECT valore FROM meta WHERE chiave = %s", (key,))
+        row = cur.fetchone()
+        return (False, None) if row is None else (True, self._parse_json(row[0]))
+
+    def _check_existing(self, cur, present, ignore_migration):
+        if "meta" not in present:
+            v1 = [t for t in ("consegne", "giornate", "squadre") if t in present]
+            detail = ""
+            if v1:
+                counts = []
+                for t in v1:
+                    cur.execute(f"SELECT COUNT(*) FROM {t}")
+                    counts.append(f"{t}: {cur.fetchone()[0]} righe")
+                detail = " (" + ", ".join(counts) + ")"
+            raise SchemaError(
+                f"Il database contiene tabelle della V1 o di uno schema sconosciuto{detail}, senza il "
+                f"marcatore di schema V2. Eseguire migrate.py oppure usare un database nuovo. "
+                f"Nessuna tabella è stata modificata.")
+        found, version = self._meta_value(cur, "schema_version")
+        if not found:
+            raise SchemaError("Il database ha le tabelle ma non il marcatore di schema V2. "
+                              "Nessuna tabella è stata modificata.")
+        if version != SCHEMA_VERSION:
+            raise SchemaError(f"Versione di schema {version!r} non supportata: questo server gestisce la "
+                              f"{SCHEMA_VERSION}. Nessuna tabella è stata modificata.")
+        found, flag = self._meta_value(cur, "migrazione_in_corso")
+        if found and flag and not ignore_migration:
+            raise SchemaError("Migrazione dei dati in corso o interrotta (flag 'migrazione_in_corso'): "
+                              "completarla o annullarla con migrate.py. Nessuna tabella è stata modificata.")
+        missing_tables = [t for t in self._ALL_TABLES if t not in present]
+        if missing_tables:
+            raise SchemaError(f"Schema incompleto: mancano le tabelle {', '.join(missing_tables)}. "
+                              f"Ripartire da un database nuovo. Nessuna tabella è stata modificata.")
+        for t in self._ALL_TABLES:
+            want, have = self._expected_columns(t), self._actual_columns(cur, t)
+            if want != have:
+                parts = []
+                if want - have:
+                    parts.append(f"mancano {', '.join(sorted(want - have))}")
+                if have - want:
+                    parts.append(f"in più {', '.join(sorted(have - want))}")
+                raise SchemaError(f"Schema della tabella '{t}' non conforme a quello atteso "
+                                  f"({'; '.join(parts)}). Nessuna tabella è stata modificata.")
 
     # ── conversione record ↔ riga ──────────────────────────────────────────
     def _row_values(self, t, rec):
@@ -1442,6 +1556,7 @@ class _SqlV2:
             for tbl in ["giornata_consegne", "giornate", "consegne", "squadre", "utenti",
                         "tipi_account", "negozi", "meta"]:
                 cur.execute(f"DELETE FROM {tbl}")
+            self._upsert_meta(cur, "schema_version", SCHEMA_VERSION)      # il reset conserva il marcatore
         self._tx(fn)
 
 
@@ -1449,6 +1564,7 @@ class _PgV2(_SqlV2):
     """PostgreSQL (psycopg2). JSONB per i campi lista e per `extra`."""
     T_JSON = "JSONB"
     SEQ_DEF = "BIGSERIAL NOT NULL UNIQUE"
+    SCHEMA_EXPR = "current_schema()"
 
     def _connect(self):
         return _pg_connect()
@@ -1502,6 +1618,7 @@ class _MysqlV2(_SqlV2):
     - le chiavi esterne creano da sole l'indice; upsert dei metadati con ON DUPLICATE KEY.
     """
     T_JSON = "JSON"
+    SCHEMA_EXPR = "DATABASE()"
     T_TEXT = "LONGTEXT"
     SEQ_DEF = "BIGINT NOT NULL AUTO_INCREMENT UNIQUE"
     TABLE_OPTS = " DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin"
@@ -1541,18 +1658,28 @@ class _MysqlV2(_SqlV2):
 
 _v2 = None
 
-def init_storage_v2():
-    """Inizializza il backend V2 (da chiamare una volta all'avvio; il server V2 usa questa
-    al posto di init_storage()). Marcatore di schema e rifiuto di dati V1: passo 1d."""
+def init_storage_v2(ignore_migration=False):
+    """Inizializza il backend V2 (da chiamare una volta all'avvio; il server V2 usa questa al posto
+    di init_storage()).
+
+    Archivio vuoto → viene inizializzato e marcato `schema_version = 2`.
+    Archivio non vuoto → viene solo verificato: se non è uno schema V2 valido solleva SchemaError
+    SENZA modificare nulla (dati V1 non migrati, marcatore assente o di altra versione, tabelle o
+    colonne diverse da quelle attese, migrazione interrotta). Dopo un errore nessun backend resta attivo.
+
+    `ignore_migration=True` è riservato a migrate.py: permette di aprire un archivio con il flag
+    `migrazione_in_corso` per completarla o annullarla."""
     global _v2
+    _v2 = None
     if BACKEND == "json":
-        _v2 = _JsonV2()
+        be = _JsonV2(ignore_migration)
     elif BACKEND == "postgres":
-        _v2 = _PgV2()
+        be = _PgV2(ignore_migration)
     elif BACKEND == "mysql":
-        _v2 = _MysqlV2()
+        be = _MysqlV2(ignore_migration)
     else:
         raise ValueError(f"DB_BACKEND non valido: '{BACKEND}'. Valori accettati: json, mysql, postgres")
+    _v2 = be
     log.info(f"[STORAGE] Backend V2 attivo: {BACKEND}")
 
 def _be():
