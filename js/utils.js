@@ -15,7 +15,10 @@ export function uid() {
 
 export function fmtDate(d) {
   if (!d) return '—';
-  const [y, m, g] = d.split('-');
+  // I dati arrivano dal server e finiscono spesso in innerHTML: un valore che non è una data
+  // AAAA-MM-GG viene mostrato come testo semplice (escapato), mai interpretato come HTML.
+  if (typeof d !== 'string' || !/^[0-9]{4}-[0-9]{2}-[0-9]{2}/.test(d)) return escHtml(d);
+  const [y, m, g] = d.slice(0, 10).split('-');
   return `${g}/${m}/${y}`;
 }
 
@@ -31,11 +34,12 @@ export function isPast(dateStr) {
 // ── HTML escaping ────────────────────────────────
 
 export function escHtml(str) {
-  return (str || '')
+  return String(str ?? '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 // ── Badge / Pill HTML ────────────────────────────
@@ -65,7 +69,7 @@ export function tipoBadge(tipo) {
     ins_muro:        ['tipo-ins-muro',    '🧱 Installazione a Muro'],
     ins_sbs:         ['tipo-ins-sbs',     '↔️ Installazione Side-by-Side'],
   };
-  const [cls, label] = map[tipo] || ['tipo-consegna', tipo || '—'];
+  const [cls, label] = map[tipo] || ['tipo-consegna', escHtml(tipo || '—')];
   return `<span class="tipo-badge ${cls}">${label}</span>`;
 }
 
@@ -78,7 +82,7 @@ export function getSquadraColorIndex(nome) {
 export function sqBadgeHtml(nome) {
   if (!nome) return '';
   const idx = getSquadraColorIndex(nome);
-  return `<span class="sq-badge sq-c${idx}">${nome}</span>`;
+  return `<span class="sq-badge sq-c${idx}">${escHtml(nome)}</span>`;
 }
 
 // ── Articoli helpers ─────────────────────────────
@@ -113,11 +117,21 @@ export function squadraBadgeForConsegna(cid) {
 
 // ── Toast ────────────────────────────────────────
 
+let _toastTimer = null;
+
 export function toast(msg) {
   const el = document.getElementById('toast');
+  // Cancella il timer precedente: ogni nuovo toast reimposta il countdown
+  if (_toastTimer) {
+    clearTimeout(_toastTimer);
+    _toastTimer = null;
+  }
   el.textContent = msg;
   el.classList.add('show');
-  setTimeout(() => el.classList.remove('show'), 2800);
+  _toastTimer = setTimeout(() => {
+    el.classList.remove('show');
+    _toastTimer = null;
+  }, 2800);
 }
 
 // ── Modal helpers ────────────────────────────────

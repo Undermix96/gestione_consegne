@@ -1,68 +1,109 @@
 /**
  * main.js — Entry point dell'applicazione
- *
- * 1. Inizializza tema, carica dati, avvia polling
- * 2. Espone le funzioni necessarie agli handler inline dell'HTML
- *    (onclick="...", oninput="...") come proprietà di window,
- *    poiché i moduli ES hanno scope chiuso.
  */
 
-import { initTheme, toggleTheme }         from './theme.js';
-import { loadData, ping, markDirty }      from './sync.js';
-import { renderAll, switchView, selectGiornata, renderGiornata, renderSidebar, renderLista }          from './render.js';
-import { db, serverOnline, isDirty }      from './store.js';
+import { initTheme, toggleTheme }       from './theme.js';
+import { loadData, ping, pollData }     from './sync.js';
+import {
+  renderAll, switchView, selectGiornata,
+  renderGiornata, renderSidebar, renderLista,
+} from './render.js';
+import {
+  db, serverOnline, setCurrentUser,
+} from './store.js';
+import {
+  initAuthUI, showLoginOverlay, isLoggedIn, mustChangePassword,
+  getUsername, getUserId, getNegozioId,
+  getPermessi, isSuperadmin, logout,
+  showChangePasswordOverlay,
+} from './auth.js';
+import { hasPermesso } from './permessi.js';
 
 import {
-  openNewConsegnaModal,
-  openEditConsegnaModal,
-  saveConsegna,
-  deleteCurrentConsegna,
-  addArticoloRow,
-  removeArticoloRow,
-  updateCounter,
+  openNewConsegnaModal, openEditConsegnaModal,
+  saveConsegna, deleteCurrentConsegna,
+  addArticoloRow, removeArticoloRow, updateCounter,
 } from './modal-consegna.js';
 
 import {
-  openNewGiornataModal,
-  saveNuovaGiornata,
-  removeFromGiornata,
-  segnaConsegnata,
-  deleteGiornata,
+  openNewGiornataModal, saveNuovaGiornata,
+  removeFromGiornata, segnaConsegnata, deleteGiornata,
 } from './giornate.js';
 
 import {
-  openSelectModal,
-  renderSelectList,
-  confirmAddToGiornata,
+  openSelectModal, renderSelectList, confirmAddToGiornata,
 } from './modal-select.js';
 
 import {
-  addSquadra,
-  renameSquadra,
-  setSquadraColor,
-  deleteSquadra,
+  addSquadra, renameSquadra, setSquadraColor, deleteSquadra,
 } from './squadre.js';
 
-import { stampaPDF }                      from './stampa.js';
-import { openModal, closeModal, toast }   from './utils.js';
+import {
+  renderPannelloAdmin,
+  openNuovoUtente, salvaNuovoUtente,
+  openCambioPasswordUtente, salvaCambioPasswordUtente,
+  openCambioTipoAccount, salvaCambioTipoAccount,
+  eliminaUtente,
+} from './modal-utenti.js';
+
+import { stampaPDF } from './stampa.js';
+import { openModal, closeModal, toast } from './utils.js';
 
 // ── Init ─────────────────────────────────────────
 
 window.addEventListener('DOMContentLoaded', async () => {
   initTheme();
-  await loadData();
-  renderAll();
+  initAuthUI();
+  _aggiornaHeaderUtente();
 
-  // Ping ogni 2 secondi
+  if (!isLoggedIn()) {
+    showLoginOverlay();
+    return;
+  }
+  // Ricaricamento della pagina con il cambio password obbligatorio ancora da fare
+  if (mustChangePassword()) {
+    showChangePasswordOverlay('Devi cambiare la password prima di continuare.');
+    return;
+  }
+
+  await _initApp();
+});
+
+window._initApp = async function () {
+  const username     = getUsername();
+  const userId       = getUserId();
+  const negozioId    = getNegozioId();
+  const permessi     = getPermessi();
+  const superadmin   = isSuperadmin();
+
+  setCurrentUser({ id: userId, username, negozio_id: negozioId, permessi, is_superadmin: superadmin });
+  _aggiornaHeaderUtente();
+
+  if (superadmin) {
+    _avviaSuperadmin();
+    setInterval(ping, 2000);   // disconnessione e sessione scaduta si rilevano anche nel pannello admin
+    return;
+  }
+
+  _applicaPermessiUI();
+
+  const ok = await loadData();
+  if (ok) renderAll();
+
+  // Se la vista iniziale (lista) non è consentita, si apre la prima scheda visibile
+  if (!hasPermesso('consegne.leggi')) {
+    const prima = [...document.querySelectorAll('.nav-tab')].find(t => t.style.display !== 'none');
+    if (prima) prima.click();
+  }
+
+  // Ping ogni 2 secondi (1 fallito → overlay)
   setInterval(ping, 2000);
 
-  // Polling dati ogni 8 secondi
-  setInterval(async () => {
-    if (serverOnline && !isDirty) {
-      const ok = await loadData();
-      if (ok) renderAll();
-    }
-  }, 8000);
+  // Polling ogni 8 secondi basato su timestamp
+  setInterval(pollData, 8000);
+
+  // Callback chiamata da sync.js quando il poll trova cambiamenti
+  window._onPollUpdate = () => renderAll();
 
   // Chiudi modal su click overlay o ESC
   document.querySelectorAll('.modal-overlay').forEach(overlay => {
@@ -74,27 +115,79 @@ window.addEventListener('DOMContentLoaded', async () => {
     if (e.key === 'Escape')
       document.querySelectorAll('.modal-overlay.open').forEach(el => el.classList.remove('open'));
   });
-});
+};
 
-// ── Esponi funzioni globali per gli onclick HTML ──
-// (necessario con ES modules: lo scope è locale al modulo)
+function _avviaSuperadmin() {
+  document.querySelector('.app-body').style.display = 'none';
+  document.querySelector('.nav-tabs').style.display = 'none';
+  document.getElementById('superadminPanel').style.display = '';
+
+  // Importazione dinamica per non caricare modal-admin a tutti gli utenti
+  import('./modal-admin.js').then(m => {
+    m.renderPannelloSuperadmin('superadminPanel');
+  });
+}
+
+function _applicaPermessiUI() {
+  // Schede delle viste: visibili solo se l'utente può leggerne i dati
+  const tabLista = document.querySelector('.nav-tab[data-view="lista"]');
+  if (tabLista) tabLista.style.display = hasPermesso('consegne.leggi') ? '' : 'none';
+  const tabGiornate = document.querySelector('.nav-tab[data-view="giornate"]');
+  if (tabGiornate) tabGiornate.style.display = hasPermesso('giornate.leggi') ? '' : 'none';
+
+  // Tab Impostazioni: visibile solo con squadre.gestisci
+  const tabImpostazioni = document.querySelector('.nav-tab[data-view="impostazioni"]');
+  if (tabImpostazioni) {
+    tabImpostazioni.style.display = hasPermesso('squadre.gestisci') ? '' : 'none';
+  }
+
+  // Link gestione utenti nell'header: visibile con utenti.leggi
+  const linkUtenti = document.getElementById('btnGestioneUtenti');
+  if (linkUtenti) {
+    linkUtenti.style.display = hasPermesso('utenti.leggi') ? '' : 'none';
+  }
+
+  // Bottone nuova consegna
+  const btnNuovaConsegna = document.getElementById('btnNuovaConsegna');
+  if (btnNuovaConsegna) {
+    btnNuovaConsegna.style.display = hasPermesso('consegne.scrivi') ? '' : 'none';
+  }
+
+  // Bottone nuova giornata (sidebar + barra vista)
+  const btnNuovaGiornata = document.getElementById('btnNuovaGiornata');
+  if (btnNuovaGiornata) {
+    btnNuovaGiornata.style.display = hasPermesso('giornate.crea') ? '' : 'none';
+  }
+  const btnNuovaGiornataBar = document.getElementById('btnNuovaGiornataBar');
+  if (btnNuovaGiornataBar) {
+    btnNuovaGiornataBar.style.display = hasPermesso('giornate.crea') ? '' : 'none';
+  }
+
+  // Bottone stampa PDF
+  const btnStampa = document.getElementById('btnStampaPDF');
+  if (btnStampa) {
+    btnStampa.style.display = hasPermesso('stampa.pdf') ? '' : 'none';
+  }
+}
+
+function _aggiornaHeaderUtente() {
+  const el = document.getElementById('headerUsername');
+  if (!el) return;
+  el.textContent = getUsername() ?? '';
+}
+
+// ── Esponi funzioni globali ───────────────────────
 
 Object.assign(window, {
-  // Navigation
   switchView,
   selectGiornata,
   toggleTheme,
-
-  // Render (usate anche da dragdrop.js via window)
   renderGiornata,
   renderSidebar,
   renderLista,
 
-  // Lista
   openNewConsegnaModal,
   openEditConsegnaModal,
-
-  // Modal consegna
   saveConsegna,
   deleteCurrentConsegna,
   addArticoloRow,
@@ -103,24 +196,37 @@ Object.assign(window, {
   closeModal,
   openModal,
 
-  // Giornate
   openNewGiornataModal,
   saveNuovaGiornata,
   removeFromGiornata,
   segnaConsegnata,
   deleteGiornata,
 
-  // Modal select
   openSelectModal,
   renderSelectList,
   confirmAddToGiornata,
 
-  // Squadre
   addSquadra,
   renameSquadra,
   setSquadraColor,
   deleteSquadra,
 
-  // Stampa
   stampaPDF,
+
+  // Gestione utenti (utenti con permessi utenti.*)
+  renderPannelloAdmin,
+  openNuovoUtente,
+  salvaNuovoUtente,
+  openCambioPasswordUtente,
+  salvaCambioPasswordUtente,
+  openCambioTipoAccount,
+  salvaCambioTipoAccount,
+  eliminaUtente,
+
+  logout: async () => {
+    await logout();
+    sessionStorage.clear();
+    location.reload();
+  },
+  apriCambioPasswordProprio: () => showChangePasswordOverlay(''),
 });

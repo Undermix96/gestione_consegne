@@ -3,8 +3,8 @@
  */
 
 import { db, currentGiornataId, setEditingConsegnaId, editingConsegnaId } from './store.js';
-import { markDirty } from './sync.js';
-import { remoteLog } from './api.js';
+import { applyServerResponse, setSaving, syncOk, reportError } from './sync.js';
+import { createConsegna, updateConsegna, deleteConsegna } from './api.js';
 import { renderAll, renderLista, renderGiornata, renderSidebar } from './render.js';
 import { today, fmtDate, escHtml, toast, openModal, closeModal } from './utils.js';
 
@@ -26,7 +26,9 @@ export function openEditConsegnaModal(id) {
   if (!c) return;
   setEditingConsegnaId(id);
   document.getElementById('modalConsegnaTitle').textContent  = 'Modifica consegna';
-  document.getElementById('btnDeleteConsegna').style.display = '';
+  const btnDel = document.getElementById('btnDeleteConsegna');
+  btnDel.style.display = '';
+  btnDel.onclick = () => deleteCurrentConsegna(id);
   fillConsegnaForm(c);
   resetCounters();
   openModal('modalConsegna');
@@ -68,7 +70,7 @@ function fillConsegnaForm(c) {
   }
 
   if (c.giornoConsegna) {
-    const g = db.giornate.find(x => x.data === c.giornoConsegna && (x.consegneIds || []).includes(c.id));
+    const g       = db.giornate.find(x => x.data === c.giornoConsegna && (x.consegneIds || []).includes(c.id));
     const squadra = g && g.squadra ? ` — ${g.squadra}` : '';
     document.getElementById('f_giornataAssegnata_display').textContent = fmtDate(c.giornoConsegna) + squadra;
   } else {
@@ -89,7 +91,7 @@ export function updateCounter(fieldId, max) {
   const len = el.value.length;
   counter.textContent = len + ' / ' + max;
   counter.className   = 'char-counter';
-  if (len >= max)            counter.classList.add('danger');
+  if (len >= max)             counter.classList.add('danger');
   else if (len >= max * 0.85) counter.classList.add('warn');
 }
 
@@ -152,64 +154,65 @@ function getArticoliFromForm() {
   return result;
 }
 
-// ── Save / Delete ────────────────────────────────
+// ── Save ─────────────────────────────────────────
 
-export function saveConsegna() {
+export async function saveConsegna() {
   const nome    = document.getElementById('f_nome').value.trim();
   const cognome = document.getElementById('f_cognome').value.trim();
   if (!nome && !cognome) { toast('Inserisci almeno nome o cognome'); return; }
 
   const editableFields = ['dataPrenotazione','stato','nome','cognome','citta','indirizzo','tel1','tel2',
     'raee','piano','noteAbitazione','preferenzePeriodo','fasciaOraria','note'];
-  const data = {};
+  const payload = {};
   editableFields.forEach(f => {
-    const el = document.getElementById('f_' + f);
-    data[f]  = el ? el.value.trim() : '';
+    const el  = document.getElementById('f_' + f);
+    payload[f] = el ? el.value.trim() : '';
   });
-  data.articoli = getArticoliFromForm();
-  delete data.tipoProdotto;
-  delete data.codiceProdotto;
-  delete data.descrizioneProdotto;
+  payload.articoli = getArticoliFromForm();
 
-  if (editingConsegnaId) {
-    const c = db.consegne.find(x => x.id === editingConsegnaId);
-    if (c) {
-      data.giornoConsegna = c.giornoConsegna;
-      Object.assign(c, data);
-      markDirty();
-      remoteLog(`Modificata consegna ${c.nome} ${c.cognome}`);
-      closeModal('modalConsegna');
-      renderLista();
-      renderGiornata(currentGiornataId);
-      renderSidebar();
+  setSaving();
+  try {
+    let result;
+    if (editingConsegnaId) {
+      const c = db.consegne.find(x => x.id === editingConsegnaId);
+      payload.versione      = c?.versione;
+      payload.giornoConsegna = c?.giornoConsegna || '';
+      result = await updateConsegna(editingConsegnaId, payload);
       toast('Consegna modificata');
+    } else {
+      payload.giornoConsegna = '';
+      result = await createConsegna(payload);
+      toast('Consegna aggiunta');
     }
-    return;
+    applyServerResponse(result);
+    closeModal('modalConsegna');
+    renderLista();
+    if (currentGiornataId) renderGiornata(currentGiornataId);
+    renderSidebar();
+    syncOk();
+  } catch (e) {
+    reportError(e);
+    // Conflitto: i dati sono stati ricaricati; si chiude il form perché non si sovrascrivano
+    // alla cieca le modifiche dell'altro utente (riaprendo la consegna si vede la versione aggiornata).
+    if (e.status === 409) closeModal('modalConsegna');
   }
-
-  data.id          = 'c' + Date.now();
-  data.giornoConsegna = '';
-  db.consegne.push(data);
-  markDirty();
-  remoteLog(`Aggiunta nuova consegna ${data.nome} ${data.cognome}`);
-  closeModal('modalConsegna');
-  renderLista();
-  renderGiornata(currentGiornataId);
-  renderSidebar();
-  toast('Consegna aggiunta');
 }
 
-export function deleteCurrentConsegna() {
-  if (!editingConsegnaId) return;
-  if (!confirm("Eliminare definitivamente questa consegna? L'operazione non è reversibile.")) return;
-  const c = db.consegne.find(x => x.id === editingConsegnaId);
-  db.giornate.forEach(g => {
-    g.consegneIds = (g.consegneIds || []).filter(id => id !== editingConsegnaId);
-  });
-  db.consegne = db.consegne.filter(x => x.id !== editingConsegnaId);
-  markDirty();
-  remoteLog(`Eliminata consegna: ${c ? c.nome + ' ' + c.cognome : editingConsegnaId}`);
-  closeModal('modalConsegna');
-  renderAll();
-  toast('Consegna eliminata');
+// ── Delete ───────────────────────────────────────
+
+export async function deleteCurrentConsegna(id) {
+  if (!id) return;
+  const c = db.consegne.find(x => x.id === id);
+  if (!confirm(`Eliminare definitivamente la consegna di ${c ? c.cognome + ' ' + c.nome : id}? L'operazione non è reversibile.`)) return;
+  setSaving();
+  try {
+    const result = await deleteConsegna(id);
+    applyServerResponse(result);
+    if (editingConsegnaId === id) closeModal('modalConsegna');
+    renderAll();
+    toast('Consegna eliminata');
+    syncOk();
+  } catch (e) {
+    reportError(e);
+  }
 }

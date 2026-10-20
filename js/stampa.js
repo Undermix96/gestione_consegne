@@ -3,7 +3,11 @@
  */
 
 import { db, currentGiornataId } from './store.js';
-import { fmtDate } from './utils.js';
+import { fmtDate, escHtml } from './utils.js';
+
+// Tutti i dati dell'utente sono escapati: la finestra di stampa è della stessa origine dell'app
+// (avrebbe accesso al token di sessione) e un nome con codice HTML non deve mai essere eseguito.
+const e = escHtml;
 
 export function stampaPDF() {
   const g = db.giornate.find(x => x.id === currentGiornataId);
@@ -34,16 +38,16 @@ export function stampaPDF() {
       : arts.map((a, j) => `
         <tr>
           <td style="text-align:center;font-weight:700;color:#555;">${arts.length > 1 ? j + 1 : '—'}</td>
-          <td>${a.tipo || '—'}</td>
-          <td style="font-family:monospace;font-size:10px;">${a.codice || '—'}</td>
-          <td>${a.desc || '—'}</td>
+          <td>${e(a.tipo || '—')}</td>
+          <td style="font-family:monospace;font-size:10px;">${e(a.codice || '—')}</td>
+          <td>${e(a.desc || '—')}</td>
           <td style="text-align:center;">${tipoLabel[a.tipoConsegna] || 'Consegna'}</td>
         </tr>`).join('');
 
     const noteExtra = [
-      c.noteAbitazione    ? `<div class="nota"><span class="nota-label">Note abitazione:</span> ${c.noteAbitazione}</div>` : '',
-      c.preferenzePeriodo ? `<div class="nota"><span class="nota-label">Preferenze periodo:</span> ${c.preferenzePeriodo}</div>` : '',
-      c.note              ? `<div class="nota"><span class="nota-label">Note aggiuntive:</span> ${c.note}</div>` : '',
+      c.noteAbitazione    ? `<div class="nota"><span class="nota-label">Note abitazione:</span> ${e(c.noteAbitazione)}</div>` : '',
+      c.preferenzePeriodo ? `<div class="nota"><span class="nota-label">Preferenze periodo:</span> ${e(c.preferenzePeriodo)}</div>` : '',
+      c.note              ? `<div class="nota"><span class="nota-label">Note aggiuntive:</span> ${e(c.note)}</div>` : '',
     ].filter(Boolean).join('');
 
     return `
@@ -51,12 +55,12 @@ export function stampaPDF() {
       <div class="cons-header">
         <div class="cons-num">${i + 1}</div>
         <div class="cons-cliente">
-          <div class="cons-nome">${c.cognome || ''} ${c.nome || ''}</div>
-          <div class="cons-addr">${c.citta || ''}${c.indirizzo ? ', ' + c.indirizzo : ''}${c.piano ? ' \u2014 Piano: ' + c.piano : ''}</div>
+          <div class="cons-nome">${e(c.cognome || '')} ${e(c.nome || '')}</div>
+          <div class="cons-addr">${e(c.citta || '')}${c.indirizzo ? ', ' + e(c.indirizzo) : ''}${c.piano ? ' \u2014 Piano: ' + e(c.piano) : ''}</div>
         </div>
         <div class="cons-meta">
-          <div><span class="ml">Tel:</span> ${c.tel1 || '—'}${c.tel2 ? ' / ' + c.tel2 : ''}</div>
-          <div><span class="ml">Orario:</span> ${c.fasciaOraria || '—'} &nbsp;&nbsp; <span class="ml">RAEE:</span> <strong>${c.raee === 'si' ? 'Si' : 'No'}</strong></div>
+          <div><span class="ml">Tel:</span> ${e(c.tel1 || '—')}${c.tel2 ? ' / ' + e(c.tel2) : ''}</div>
+          <div><span class="ml">Orario:</span> ${e(c.fasciaOraria || '—')} &nbsp;&nbsp; <span class="ml">RAEE:</span> <strong>${c.raee === 'si' ? 'Si' : 'No'}</strong></div>
         </div>
       </div>
       <table class="art-table">
@@ -83,7 +87,7 @@ export function stampaPDF() {
 <html lang="it">
 <head>
 <meta charset="UTF-8"/>
-<title>Giornata ${fmtDate(g.data)}${g.squadra ? ' \u2014 ' + g.squadra : ''}</title>
+<title>Giornata ${fmtDate(g.data)}${g.squadra ? ' \u2014 ' + e(g.squadra) : ''}</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: Arial, sans-serif; font-size: 11px; color: #111; background: #fff; }
@@ -119,7 +123,7 @@ export function stampaPDF() {
 </head>
 <body>
 <div class="pdf-header">
-  <h1>Giornata del ${fmtDate(g.data)}${g.squadra ? ' \u2014 ' + g.squadra : ''}</h1>
+  <h1>Giornata del ${fmtDate(g.data)}${g.squadra ? ' \u2014 ' + e(g.squadra) : ''}</h1>
   <div class="sub">${consegne.length} consegn${consegne.length === 1 ? 'a' : 'e'} programmat${consegne.length === 1 ? 'a' : 'e'}</div>
   <div class="sub-right">Stampato il ${new Date().toLocaleDateString('it-IT')}</div>
 </div>
