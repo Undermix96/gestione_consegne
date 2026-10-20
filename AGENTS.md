@@ -4,7 +4,7 @@ Documento di contesto per agenti AI. Descrive stato attuale del progetto, archit
 
 ---
 
-> **Stato del branch `v2-docker`:** questo documento descrive la **V2** (obiettivo del branch). **`storage.py` è già V2** (fase 1 completata e collaudata); `server.py` e il frontend sono ancora V1 finché le fasi 2-3 in [§11](#11-stato-di-implementazione-v2) non sono completate. **🚧 V2** indica una funzionalità della V2 non ancora presente su `main`; dove è già implementata e collaudata su questo branch il titolo lo dice (es. "implementata", ✅). Il design V2 proviene dal branch `dev` (versione Windows, mai andata in produzione) ed è stato adattato a Docker e allo storage a più backend.
+> **Stato del branch `v2-docker`:** questo documento descrive la **V2** (obiettivo del branch). **`storage.py` è già V2** (fase 1) e lo è anche **`server.py`** (fase 2, collaudato con `tests/test_server.py` su json, PostgreSQL e MySQL); il frontend è ancora V1 finché la fase 3 in [§11](#11-stato-di-implementazione-v2) non è completata (quindi, per ora, il frontend non funziona con il server V2). **🚧 V2** indica una funzionalità della V2 non ancora presente su `main`; dove è già implementata e collaudata su questo branch il titolo lo dice (es. "implementata", ✅). Il design V2 proviene dal branch `dev` (versione Windows, mai andata in produzione) ed è stato adattato a Docker e allo storage a più backend.
 
 ## Indice
 
@@ -116,6 +116,7 @@ gestione_consegne/
 ├── migrate.py              # 🚧 V2: migrazione V1→V2 e tra backend (vedi §11, fase 4)
 ├── tests/                  # 🚧 V2: suite di contratto di storage.py (non inclusa nell'immagine)
 │   ├── test_storage_contract.py
+│   ├── test_server.py      # 🚧 V2: test del server (auth, permessi, multi-negozio, REST) ✅
 │   └── run_all.sh          # esegue la suite su ogni backend (TEST_BACKENDS)
 ├── compose.test.yaml       # 🚧 V2: database temporanei per i test (separato dalla produzione)
 ├── requirements.txt        # Dipendenze Python
@@ -241,7 +242,7 @@ CHALLENGE_TTL = 60     # secondi
 | POST | `/api/log` | Riceve `{"msg": "..."}` dal client e lo scrive nel log. |
 | GET | `/*` | File statici dalla directory `BASE_DIR`. |
 
-### Endpoint HTTP — V2 🚧
+### Endpoint HTTP — V2 (implementati in `server.py`, fase 2 ✅)
 Sostituiscono `GET/POST /api/data` e `POST /api/log`. `GET /api/ping` resta senza autenticazione obbligatoria (usato dall'healthcheck Docker); se il client invia `X-Session-Token` valido la sessione viene rinnovata. `GET /*` (file statici) invariato.
 
 | Metodo | Path | Auth | Permesso richiesto | Descrizione |
@@ -500,6 +501,9 @@ Collezioni: `consegne`, `giornate`, `squadre`, `negozi`, `tipi_account`, `utenti
 - **Campi con default non rimovibili:** `consegne.stato`, `squadre.colorIdx`, `utenti.is_superadmin`, `utenti.primo_login` sono come obbligatori (`update_record(..., {"stato": None})` → `ValueError`).
 - **Filtri:** solo uguaglianza su `id`, `versione` (se prevista) e campi tipizzati scalari; un filtro `None` trova i record senza quel campo. Un filtro su un campo "extra" o su una lista è un `ValueError` (su SQL non sarebbe una colonna). Confronti esatti (maiuscole e accenti contano), tranne `utenti.username`.
 - **Ordine:** `list_records` restituisce sempre l'ordine di inserimento, anche dopo gli update.
+
+### Test del server (`tests/test_server.py`)
+Avvia `server.py` in-process su una porta effimera, sullo storage del backend scelto con `DB_BACKEND`, e lo interroga via HTTP. Copre: Challenge-Response (monouso, utente inesistente e password errata indistinguibili), cambio password obbligatorio (anche l'enforcement lato server), sessioni (scadenza, logout, invalidazione), ordine dei controlli 401 → 403 → negozio, superadmin senza accesso ai dati operativi, isolamento tra negozi, optimistic locking (409), operazioni su giornate e squadre, regole sugli utenti, timestamp di polling per negozio, file statici (solo frontend), rifiuto di un archivio V1 all'avvio (codice di uscita 2). Gira insieme alla suite dello storage con gli stessi comandi del paragrafo successivo (`unittest discover` raccoglie entrambi i file).
 
 ### Test (suite di contratto)
 `tests/test_storage_contract.py` contiene gli **stessi test per tutti i backend**: round-trip dei record, optimistic locking (anche sotto concorrenza, con una pausa forzata tra lettura e scrittura per rendere la corsa deterministica), unicità, riferimenti, tipi e lunghezze, filtri, ordine di inserimento, isolamento per negozio, operazioni sulle giornate, `insert_records` tutto-o-niente, metadati; i test del controllo dello schema all'avvio (marcatore, dati V1, versione, flag di migrazione, colonne e tabelle alterate: sempre con verifica che nulla sia stato modificato), più test specifici del backend json (persistenza, file corrotto, backup) e dei backend SQL (schema idempotente, connessione persa, reset rifiutato). La qualità dei test è stata verificata introducendo bug intenzionali nel codice (mutation check): ogni bug reale è stato rilevato.
@@ -982,13 +986,29 @@ Questa sezione traccia l'avanzamento della V2 sul branch `v2-docker` (partito da
 |------|-----------|-------|
 | 0 | Documentazione (`AGENTS.md`, `README.md`) | ✅ completata, in revisione |
 | 1 | `storage.py`: schema V2 e API per singolo record su json/mysql/postgres, con suite di test condivisa | ✅ completata — API per record, backend json/PostgreSQL/MySQL, marcatore e controllo dello schema, `compose.test.yaml`; collaudata in Docker (json, `postgres:16`, `mysql:8.4`) |
-| 2 | `server.py`: Challenge-Response, sessioni, endpoint REST, permessi, filtro `negozio_id`, `/api/stato`, creazione superadmin | ⬜ |
+| 2 | `server.py`: Challenge-Response, sessioni, endpoint REST, permessi, filtro `negozio_id`, `/api/stato`, creazione superadmin | ✅ completata — vedi "Scelte implementative della fase 2" sotto; 52 test del server su json, `postgres:16`, `mysql:8.4` |
 | 3 | Frontend V2 (vedi metodo sotto) | ⬜ |
 | 4 | `migrate.py` | ⬜ |
 | 5 | Test integrato: migrazione → primo login superadmin → negozio → tipo account → utente → login → operatività, su tutti e 3 i backend | ⬜ |
 | 6 | `squadra_id` al posto del nome squadra nelle giornate (server, `render.js`, `giornate.js`, `stampa.js`, `utils.js`, `modal-consegna.js`, schema, migrazione) | ⬜ rimandata |
 
 Ogni fase è un commit separato (o gruppo di commit) rivisto prima di passare alla successiva.
+
+### Scelte implementative della fase 2 (`server.py`)
+Dove il design di §5 lasciava margine, o dove `dev` è stato migliorato:
+- **Struttura:** un solo file; tabella delle rotte (`@route(metodo, pattern, requisito)`) con dispatcher unico che applica 401 → 403 (cambio password pendente) → requisito (`public`, `auth`, `superadmin`, `operativo` = non superadmin, oppure un permesso). Il controllo del `negozio_id` della risorsa è nell'handler (`check_tenant`). Server `ThreadingHTTPServer`; challenge, sessioni, timestamp e contatore client hanno lock separati.
+- **Errori:** `HttpError` → codice indicato; `ConflictError` → 409; `NotFoundError` → 404; `DuplicateError`/`IntegrityError` → 409; `ValueError` → 400; qualunque altra eccezione (anche `StorageError` generico) → 500 con messaggio generico (dettaglio nel log), il server resta attivo.
+- **`must_change_password` imposto dal server:** con la sessione in quello stato sono ammessi solo `change-password`, `logout` e `ping` (403 sul resto). Il cambio password invalida tutte le sessioni dell'utente.
+- **Login:** il challenge si consuma sempre; utente inesistente e password errata danno la stessa risposta (401, `Credenziali non valide`), distinguibili solo nel log. Al massimo 1000 challenge contemporanei (503 oltre). Gli hash in ingresso devono essere 64 caratteri esadecimali minuscoli. Un utente senza tipo account **o senza negozio** (non superadmin) è "non configurato".
+- **Utenti:** nessuno può reimpostare la password, cambiare il tipo o eliminare **se stesso** tramite gli endpoint di gestione (per la propria password c'è `change-password`); il reset della password di un altro utente imposta `primo_login = true` (deve sceglierne una sua al prossimo accesso); cambio tipo, reset password ed eliminazione invalidano subito le sessioni dell'utente. Un utente creato da un admin ha `primo_login = false`.
+- **`versione` obbligatoria** (intero) nei `PUT` di consegne e squadre: se manca → 400, se non coincide → 409. Le altre operazioni (assegna, rimuovi, riordina, completa, rinomina delle giornate) non richiedono `versione` e incrementano quella dei record che toccano, quindi un'altra modifica in corso su quella consegna riceverà 409.
+- **Giornate:** eliminare una giornata con consegne assegnate → 409 (come già fa l'interfaccia V1; `dev` le rimetteva in attesa). Assegnare imposta `stato = da_confermare` e `giornoConsegna`; rimuovere riporta `in_attesa` (solo se `programmata`/`da_confermare`) e svuota `giornoConsegna`/`fasciaOraria`. `data` deve essere `AAAA-MM-GG`.
+- **Squadre:** nome univoco per negozio (senza distinzione di maiuscole), `colorIdx` 0-7 (alla creazione: numero di squadre del negozio modulo 8). Rinominare aggiorna `giornate.squadra`; eliminare lo svuota. **Operazioni multi-record non atomiche** (lo storage non ha transazioni tra collezioni): l'ordine delle scritture è scelto perché un'interruzione si risolva ripetendo l'operazione (giornate prima, squadra dopo).
+- **Polling:** timestamp **per negozio**, in memoria; partono dall'ora di avvio e sono strettamente crescenti. Eliminare una consegna, rinominare/eliminare una squadra e assegnare/rimuovere aggiornano più categorie.
+- **File statici:** serviti solo `index.html`, `css/`, `js/` (V1 serviva qualunque file dell'immagine, compreso il codice Python).
+- **Rimossi:** `GET/POST /api/data`, `POST /api/log`, `/api/clients`, CORS (`/api` è sulla stessa origine).
+- **Avvio:** `init_storage_v2()` + creazione del superadmin; `SchemaError` → log leggibile e uscita con codice 2; altro `StorageError` → codice 1.
+- **Forma delle risposte** (da rispettare nel frontend, fase 3): `GET /api/negozi` → `{"negozi": [...]}`, `GET /api/tipi-account` → `{"tipi_account": [...]}`, `GET /api/utenti` → `{"utenti": [...]}` (senza `password_hash`, senza il superadmin), `POST /api/negozi` → `{"ok": true, "negozio": {...}}`, `POST /api/tipi-account` → `{"ok": true, "tipo": {...}}`, `POST /api/utenti` → `{"ok": true, "id": "..."}`, le altre scritture amministrative `{"ok": true}`; le scritture operative rispondono con il db del negozio (§5).
 
 ### Metodo e regole
 - **Non riscrivere a memoria il codice del branch `dev`:** si parte dai file di `dev` (`git show origin/dev:<file>`) e si adattano.
@@ -1009,12 +1029,12 @@ Ogni fase è un commit separato (o gruppo di commit) rivisto prima di passare al
 |---|-------|------|
 | 1 | ~~Firma dell'API di `storage.py`~~ definitiva, implementata e collaudata sui tre backend (§6) | 1 ✅ |
 | 2 | ~~Vincoli SQL~~ deciso e applicato su PostgreSQL e MySQL (§6) | 1 ✅ |
-| 3 | Comportamento del server su `StorageError`: crash (V1: "2 tentativi poi crash") oppure risposta 500 mantenendo il server attivo | 1-2 |
-| 4 | Timestamp di polling per negozio invece che globali | 2 |
+| 3 | ~~Comportamento del server su `StorageError`~~ deciso: risposta 500 senza far cadere il server (il motivo del crash di V1, evitare di scrivere dati corrotti, non esiste più con lo storage per record). All'avvio: `SchemaError` → uscita con codice 2, altro `StorageError` → codice 1 | 2 ✅ |
+| 4 | ~~Timestamp di polling per negozio~~ deciso e implementato (in memoria, per negozio) | 2 ✅ |
 | 5 | `migrate.py`: ~~migrazione in-place~~ esclusa dal controllo dello schema (la destinazione è sempre nuova, §11); restano da decidere eventuali dati dell'era `dev` da preservare e il rapporto con `import_data.py` (resta separato o viene assorbito) | 4 |
-| 6 | Ambiente di sviluppo Docker isolato dalla produzione (es. `compose.dev.yaml` con progetto, volume e porta separati) | prima della fase 2 |
-| 7 | Connessione per operazione: ~32 ms su MySQL (TLS + autenticazione) contro ~4 ms su PostgreSQL. Valutare riuso delle connessioni o TLS disattivato su rete Docker privata | 2 |
-| 8 | Il server V2 deve tradurre `SchemaError` in un errore di avvio leggibile (messaggio nel log e uscita con codice diverso da 0) | 2 |
+| 6 | ~~Ambiente di sviluppo isolato dalla produzione~~ non necessario: la produzione sta su un altro server e i test usano `compose.test.yaml` (progetto separato, nessun volume né porta pubblicata) | ✅ |
+| 7 | Connessione per operazione: ~32 ms su MySQL (TLS + autenticazione) contro ~4 ms su PostgreSQL. Ogni scrittura del server V2 fa ~4 letture (risposta con il db del negozio) più la scrittura: ~150 ms su MySQL, accettabile. Da rivalutare solo se serve (riuso delle connessioni, TLS disattivato su rete Docker privata) | rimandato |
+| 8 | ~~Il server V2 traduce `SchemaError` in un errore di avvio leggibile~~ fatto (messaggio nel log, uscita con codice 2) | 2 ✅ |
 
 ---
 
