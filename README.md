@@ -2,7 +2,7 @@
 
 Sistema completo per la gestione di consegne e installazioni, progettato per team di lavoro. Permette di pianificare le attività, assegnarle a squadre e monitorare lo stato delle consegne.
 
-> 🚧 **V2 in sviluppo (branch `v2-docker`):** login multi-utente, permessi per tipo di account e multi-negozio. Le sezioni marcate **🚧 V2** descrivono la versione in sviluppo e **non sono ancora disponibili** su `main`. Stato e fasi di avanzamento: `AGENTS.md`, §11. Al momento sono pronti lo storage (fase 1), il server (fase 2) e il frontend (fase 3); manca `migrate.py` (fase 4), quindi i dati V1 esistenti non si possono ancora portare nella V2.
+> 🚧 **V2 in sviluppo (branch `v2-docker`):** login multi-utente, permessi per tipo di account e multi-negozio. Le sezioni marcate **🚧 V2** descrivono la versione in sviluppo e **non sono ancora disponibili** su `main`. Stato e fasi di avanzamento: `AGENTS.md`, §11. Al momento sono pronti lo storage (fase 1), il server (fase 2) e il frontend (fase 3); anche la migrazione dei dati (`migrate.py`, fase 4) è pronta. Resta il collaudo integrato (fase 5).
 
 ## 📋 Funzionalità principali
 
@@ -144,9 +144,83 @@ Docker verifica automaticamente che il server risponda su `/api/ping` ogni 15 se
 docker inspect --format='{{.State.Health.Status}}' gestione-consegne-app-1
 ```
 
-### Migrazione dei dati V1 → V2 🚧
+### Migrazione dei dati verso la V2 (`migrate.py`)
 
-Per portare i dati esistenti (V1) allo schema V2 è prevista la **migrazione con `migrate.py`**, che funzionerà con tutti e tre i backend (JSON, MySQL, PostgreSQL) sia come sorgente sia come destinazione. Lo script non è ancora disponibile (fase 4, `AGENTS.md` §11). **Il server V2 si rifiuta di partire** (con un messaggio nel log, senza modificare nulla) se trova dati V1 o uno schema non valido: con `restart: unless-stopped` Docker lo riavvia in ciclo finché non si migra o si usa un database/cartella dati nuovi. La migrazione scrive sempre su una destinazione nuova. Dopo la migrazione esiste solo il superadmin: gli altri utenti vanno creati dal pannello.
+Porta i dati V1 (json, MySQL o PostgreSQL), il `dati.json` della versione Windows, oppure un archivio V2 (per cambiare backend) in un archivio V2 **nuovo**. Funziona allo stesso modo con `docker compose`, con `docker run` e dalla GUI di Docker (Synology DSM 7.1, Portainer): è configurato solo con variabili d'ambiente, cartelle montate e comando del container.
+
+**Principi**
+- **Senza `MIGRATE_EXECUTE=1` non scrive nulla.** Il primo avvio produce solo un rapporto (cosa trova, cosa farebbe, quali problemi ci sono). Si legge nei log del container; se è tutto a posto si rilancia con `MIGRATE_EXECUTE=1`.
+- **La sorgente non viene mai modificata.** Il file di esportazione (`/migration/export-<data>.json`) è una copia completa dei dati di partenza: **conservarlo** (contiene i dati dei clienti).
+- **La destinazione deve essere nuova e completamente vuota**: un'altra cartella dati, un altro volume o un altro database. Il server V2 si rifiuta comunque di partire su dati V1. I dati V1 restano dove sono, intatti, fino a quando decidi di eliminarli.
+- Alla fine ogni record viene **riletto dalla destinazione e confrontato** con l'originale. Se la scrittura o la verifica falliscono, la destinazione resta marcata come "migrazione in corso" e il server V2 non parte: si ricrea la destinazione (nuova cartella o database vuoto) e si rilancia.
+- Dopo la migrazione esiste solo l'account `superadmin` (password `admin`, da cambiare al primo accesso): gli altri utenti vanno creati dal pannello.
+
+**Variabili d'ambiente** (ogni opzione ha anche un argomento: `python migrate.py --help`)
+
+| Variabile | Significato |
+|---|---|
+| `DB_BACKEND`, `DATA_DIR`, `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` | **Destinazione**: gli stessi valori che userà il server V2 (con `json`: la cartella montata su `/data`) |
+| `MIGRATE_SOURCE_KIND` | `v1` (default), `file` (il `dati.json` di Windows) o `v2` (cambio di backend) |
+| `SRC_BACKEND` | Backend della sorgente: `json` (default), `mysql`, `postgres` |
+| `SRC_DATA_DIR` | Cartella dati della sorgente json (default `/source`, montarla in sola lettura) |
+| `SRC_FILE` | Percorso del `dati.json` (default `/source/dati.json`) |
+| `SRC_DB_HOST`, `SRC_DB_PORT`, `SRC_DB_USER`, `SRC_DB_PASSWORD` | Connessione alla sorgente SQL (se omessi valgono quelli della destinazione) |
+| `SRC_DB_NAME` | Nome del database sorgente (obbligatorio per mysql/postgres; deve essere diverso da `DB_NAME` se il server è lo stesso) |
+| `MIGRATE_EXECUTE` | `1` = scrive davvero (altrimenti solo rapporto) |
+| `MIGRATE_CREATE_DB` | `1` = crea il database di destinazione se non esiste (mysql/postgres; l'utente deve poter creare database) |
+| `MIGRATE_NEGOZIO_NOME` | Nome del negozio creato per i dati V1 (default `Negozio principale`) |
+| `MIGRATE_KEEP_ORPHANS` | `1` = i riferimenti a consegne inesistenti bloccano la migrazione (default: vengono scartati e riportati nel rapporto) |
+| `MIGRATE_OUT` | File di esportazione (default `/migration/export-<data>.json`) |
+
+Cartelle da montare nel container: `/source` (sorgente json o `dati.json`, **sola lettura**), `/data` (destinazione json), `/migration` (file di esportazione). Devono essere scrivibili dall'utente 1001 del container (la sorgente no: è in sola lettura). Per un database come sorgente o destinazione il container deve poter raggiungere il database (stessa rete Docker). Il comando del container è `python migrate.py` (senza altri argomenti).
+
+**Con docker compose** (destinazione = backend configurato in `.env`; con un database aggiungere il suo profilo)
+```bash
+# 1. rapporto: nulla viene scritto
+SRC_HOST_DIR=/percorso/dati-v1 docker compose --profile migrate run --rm migrate
+# 2. migrazione vera
+SRC_HOST_DIR=/percorso/dati-v1 MIGRATE_EXECUTE=1 docker compose --profile migrate run --rm migrate
+# sorgente su un database (es. destinazione json, sorgente postgres):
+SRC_BACKEND=postgres SRC_DB_HOST=... SRC_DB_NAME=... SRC_DB_USER=... SRC_DB_PASSWORD=... \
+  docker compose --profile migrate run --rm migrate
+# destinazione su un database: --profile postgres (o mysql) in più, e DB_BACKEND nel .env
+docker compose --profile postgres --profile migrate run --rm migrate
+```
+
+**Con docker (senza compose)**
+```bash
+docker run --rm \
+  -v /percorso/dati-v1:/source:ro \
+  -v /percorso/nuova-cartella-v2:/data \
+  -v /percorso/migration:/migration \
+  -e SRC_BACKEND=json \
+  undermix/gestione-consegne:latest python migrate.py          # rapporto
+# aggiungere  -e MIGRATE_EXECUTE=1  per eseguirla davvero
+```
+Altri scenari (sostituire/aggiungere le variabili):
+- **json → PostgreSQL:** `-e DB_BACKEND=postgres -e DB_HOST=<host> -e DB_NAME=<nuovo-db> -e DB_USER=... -e DB_PASSWORD=... -e MIGRATE_CREATE_DB=1 --network <rete-del-db>` (senza `-v ...:/data`).
+- **PostgreSQL/MySQL V1 → json:** `-e SRC_BACKEND=postgres -e SRC_DB_HOST=<host> -e SRC_DB_NAME=<db-v1> -e SRC_DB_USER=... -e SRC_DB_PASSWORD=... --network <rete-del-db>`, senza `/source`.
+- **`dati.json` di Windows → V2:** `-v /cartella/con/dati.json:/source:ro -e MIGRATE_SOURCE_KIND=file`.
+- **Cambio di backend V2 → V2:** `-e MIGRATE_SOURCE_KIND=v2` e le variabili `SRC_*` della V2 di partenza.
+
+**Da Portainer:** creare uno *stack* dal file `compose.migrate.yaml` (funziona anche dove non c'è il plugin compose), compilare le variabili nella sezione *Environment variables* (`SRC_HOST_DIR`, `DATA_HOST_DIR`, `MIGRATE_HOST_DIR`, `DB_*`, `SRC_*`, `MIGRATE_*`; `DB_NETWORK` è il nome della rete Docker del database), avviare e leggere i *Logs* del container. Per eseguire: impostare `MIGRATE_EXECUTE=1` e ridistribuire lo stack.
+
+**Da Synology DSM 7.1 (app Docker, interfaccia grafica)** — i nomi esatti delle voci possono variare leggermente tra le versioni del pacchetto:
+1. *Registro/Immagine*: scaricare `undermix/gestione-consegne:latest` (se non c'è già).
+2. Creare **due cartelle nuove** in *File Station* (es. `docker/gestione-consegne-v2/data` e `docker/gestione-consegne-v2/migration`) e **concedere la scrittura** (clic destro → Proprietà → Permessi) in modo che l'utente del container (UID 1001) possa scriverci. Con un database come destinazione non serve la cartella `data`.
+3. *Container → Crea* dall'immagine. Nome a piacere (es. `gestione-consegne-migrazione`). **Non** abilitare il riavvio automatico.
+4. *Impostazioni avanzate → Comando di esecuzione*: `python migrate.py`. (Il controllo di salute dell'immagine non è applicabile a un container che si ferma da solo: può comparire "unhealthy", è innocuo.)
+5. *Impostazioni del volume → Aggiungi cartella*:
+   - la cartella dei dati **V1** → `/source`, spuntare **sola lettura**;
+   - la cartella nuova `data` → `/data`;
+   - la cartella `migration` → `/migration`.
+6. *Ambiente → Aggiungi*: le variabili della tabella (almeno `SRC_BACKEND`; con un database anche `DB_*`/`SRC_*`). Per mettere il container nella stessa rete del database: *Rete* → scegliere la rete del container del database (o, per i database sulla rete bridge predefinita, usare l'indirizzo IP del NAS e la porta pubblicata come `DB_HOST`/`SRC_DB_HOST`).
+7. Avviare il container e aprire *Dettagli → Log*: deve comparire il rapporto, che termina con `ESITO: OK — rapporto senza problemi (nulla scritto)`. Un problema nei dati o nei percorsi è spiegato in chiaro (`ESITO: FALLITO` e il motivo).
+8. Per migrare davvero: fermare il container, aggiungere la variabile `MIGRATE_EXECUTE` = `1` (modifica del container), avviarlo e controllare il log: `Verifica superata` e `ESITO: OK — migrazione completata`.
+9. Creare il container V2 (immagine `undermix/gestione-consegne:latest`, comando predefinito) con **la nuova cartella `data` su `/data`** (o `DB_BACKEND` e `DB_*` del nuovo database) e la porta desiderata.
+10. Conservare il file `export-....json` della cartella `migration`: è il backup completo dei dati di partenza.
+
+Se il container di migrazione si riavvia per errore, non fa danni: la destinazione, ormai piena, viene rifiutata.
 
 ## 🛠️ Tecnologie
 
@@ -170,10 +244,11 @@ gestione_consegne/
 ├── server.py               # Server HTTP e logica backend (V2: auth, sessioni, REST, permessi)
 ├── storage.py              # Astrazione backend dati (json/mysql/postgres): V1 legacy + V2 per singolo record ✅
 ├── import_data.py          # Script importazione one-shot da dati.json legacy
-├── migrate.py              # 🚧 V2: migrazione V1→V2 e tra backend (non ancora presente)
+├── migrate.py              # 🚧 V2: migrazione V1→V2 e tra backend (da compose, docker o GUI) ✅
 ├── requirements.txt        # Dipendenze Python (mysql-connector, psycopg2)
 ├── Dockerfile              # Immagine Docker
 ├── compose.yaml            # Orchestrazione container e profili DB
+├── compose.migrate.yaml    # 🚧 V2: migrazione come stack autonomo (Portainer, DSM): vedi "Migrazione dei dati"
 ├── compose.test.yaml       # 🚧 V2: database temporanei per i test dello storage (separato dalla produzione)
 ├── tests/                  # 🚧 V2: suite di contratto di storage.py e test di server.py (non inclusi nell'immagine); controlli statici del frontend (tests/js)
 ├── index.html              # Shell HTML: struttura, modali, nav
