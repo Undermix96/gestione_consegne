@@ -24,7 +24,7 @@ Interfaccia pubblica V1 (legacy: import_data.py e sorgente di migrate.py):
 Interfaccia pubblica V2 (accesso per singolo record) — vedi sezione "V2" in fondo:
   init_storage_v2(), list_records(), get_record(), insert_record(), insert_records(),
   update_record(), delete_record(), giornata_assegna/_rimuovi/_riordina(),
-  get_meta(), set_meta(), backup_now()
+  get_meta(), set_meta(), backup_now(), backup_run(), backup_list(), backup_last_time(), write_count()
   Eccezioni: StorageError, ConflictError, NotFoundError, DuplicateError, IntegrityError, SchemaError
 """
 
@@ -42,8 +42,8 @@ log = logging.getLogger(__name__)
 BACKEND       = os.environ.get("DB_BACKEND", "json").lower()
 DATA_DIR      = os.environ.get("DATA_DIR", "/data")
 WRITE_RETRIES = 2
-MAX_BACKUPS   = 20
-BACKUP_MIN_INTERVAL = 300   # V2 (backend json): al massimo 1 snapshot ogni 5 minuti
+MAX_BACKUPS   = int(os.environ.get("BACKUP_KEEP", 30))            # backup conservati per tipo (tutti i backend)
+BACKUP_MIN_INTERVAL = int(os.environ.get("BACKUP_INTERVAL", 21600))   # secondi tra due backup automatici (6 ore); 0 = nessuno
 
 # ─── INIT ────────────────────────────────────────────────────────────────────
 
@@ -896,6 +896,7 @@ class _JsonV2:
         for attempt in range(WRITE_RETRIES):
             try:
                 self._write_file(path, data)
+                self._writes += 1
                 return
             except Exception as e:
                 last = e
@@ -905,8 +906,9 @@ class _JsonV2:
         raise StorageError(f"Scrittura fallita su {path}: {last}")
 
     # ── backup ──────────────────────────────────────────────────────────────
-    def backup_now(self):
-        """Snapshot di tutte le collezioni e di meta.json. Non critico: logga e prosegue."""
+    def backup_run(self):
+        """Snapshot di tutte le collezioni e di meta.json. Non critico: logga e prosegue.
+        Ritorna {"ok", "file", "error", "avvisi"}."""
         try:
             bdir = os.path.join(self._dir(), "backup")
             os.makedirs(bdir, exist_ok=True)
@@ -923,13 +925,23 @@ class _JsonV2:
                 while len(old) > MAX_BACKUPS:
                     os.remove(old.pop(0))
             self._last_backup = time.time()
-            return True
+            log.info(f"[BACKUP] Creato lo snapshot {ts}")
+            return {"ok": True, "file": f"snapshot-{ts}", "error": None, "avvisi": []}
         except Exception as e:
             log.warning(f"[STORAGE] Backup fallito (non critico): {e}")
-            return False
+            return {"ok": False, "file": None, "error": str(e), "avvisi": []}
+
+    def backup_now(self):
+        return self.backup_run()["ok"]
+
+    def write_count(self):
+        return self._writes
+
+    _writes = 0
 
     def _maybe_backup(self):
-        if time.time() - self._last_backup >= BACKUP_MIN_INTERVAL:
+        """Snapshot prima di una scrittura, al massimo uno ogni BACKUP_MIN_INTERVAL (0 = mai)."""
+        if BACKUP_MIN_INTERVAL > 0 and time.time() - self._last_backup >= BACKUP_MIN_INTERVAL:
             self.backup_now()
 
     # ── controlli di integrità ──────────────────────────────────────────────
@@ -1481,7 +1493,7 @@ class _SqlV2:
                         cur.execute("INSERT INTO giornata_consegne (giornata_id, consegna_id, ordine) "
                                     "VALUES (%s, %s, %s)", (rec["id"], cid, i))
             return [copy.deepcopy(r) for r in recs]
-        return self._tx(fn)
+        return self._counted(self._tx(fn))
 
     def update(self, name, rid, changes, expected_versione):
         t = self.T[name]
@@ -1505,13 +1517,13 @@ class _SqlV2:
             cur.execute(f"UPDATE {name} SET {', '.join(c + ' = %s' for c in vals)} WHERE id = %s",
                         list(vals.values()) + [rid])
             return new
-        return self._tx(fn)
+        return self._counted(self._tx(fn))
 
     def delete(self, name, rid):
         def fn(cur):
             cur.execute(f"DELETE FROM {name} WHERE id = %s", (rid,))
             return cur.rowcount > 0
-        return self._tx(fn)
+        return self._counted(self._tx(fn))
 
     # ── giornate ↔ consegne ────────────────────────────────────────────────
     def _giornata_tx(self, gid, apply):
@@ -1528,7 +1540,7 @@ class _SqlV2:
             rec = self._from_row(t, cur.fetchone())
             self._attach_links(cur, [rec])
             return rec
-        return self._tx(fn)
+        return self._counted(self._tx(fn))
 
     def giornata_assegna(self, gid, consegna_ids):
         def apply(cur, negozio_id, ids):
@@ -1569,10 +1581,43 @@ class _SqlV2:
 
     def set_meta(self, key, value):
         self._tx(lambda cur: self._upsert_meta(cur, key, value))
+        self._counted(None)
+
+    # ── backup (pg_dump / mysqldump, vedi backup.py) ───────────────────────
+    KIND = None              # 'postgres' | 'mysql' (nelle sottoclassi)
+    _writes = 0
+    _last_backup = 0.0
+
+    def _counted(self, res):
+        self._writes += 1
+        return res
+
+    def write_count(self):
+        return self._writes
+
+    def backup_run(self):
+        """Dump del database in DATA_DIR/backup (la stessa cartella dei backup json), con gli ultimi
+        MAX_BACKUPS file per database. Non critico: non solleva eccezioni. {"ok", "file", "error", "avvisi"}"""
+        import backup
+        cfg = _db_env(5432 if self.KIND == "postgres" else 3306)
+        avviso = ""
+        try:
+            avviso = backup.version_warning(self.KIND, self._tx(self._server_version))
+        except Exception as e:
+            log.warning(f"[BACKUP] versione del server non verificabile: {e}")
+        if avviso:
+            log.warning(f"[BACKUP] {avviso}")
+        r = backup.run_dump(self.KIND, cfg, os.path.join(DATA_DIR, "backup"), MAX_BACKUPS)
+        if avviso:
+            r["avvisi"] = [avviso] + r.get("avvisi", [])
+        if r["ok"]:
+            self._last_backup = time.time()
+        return r
+
+    def backup_now(self):
+        return self.backup_run()["ok"]
 
     # ── manutenzione / test ────────────────────────────────────────────────
-    def backup_now(self):
-        return True            # i backend DB non fanno snapshot JSON (usare gli strumenti del DB)
 
     def reset_for_tests(self):
         if not os.environ.get("DB_NAME", "").endswith("_test"):
@@ -1591,6 +1636,12 @@ class _PgV2(_SqlV2):
     T_JSON = "JSONB"
     SEQ_DEF = "BIGSERIAL NOT NULL UNIQUE"
     SCHEMA_EXPR = "current_schema()"
+    KIND = "postgres"
+
+    @staticmethod
+    def _server_version(cur):
+        cur.execute("SHOW server_version")
+        return cur.fetchone()[0]
 
     def _connect(self):
         return _pg_connect()
@@ -1645,6 +1696,12 @@ class _MysqlV2(_SqlV2):
     """
     T_JSON = "JSON"
     SCHEMA_EXPR = "DATABASE()"
+    KIND = "mysql"
+
+    @staticmethod
+    def _server_version(cur):
+        cur.execute("SELECT VERSION()")
+        return cur.fetchone()[0]
     T_TEXT = "LONGTEXT"
     SEQ_DEF = "BIGINT NOT NULL AUTO_INCREMENT UNIQUE"
     TABLE_OPTS = " DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin"
@@ -1771,10 +1828,28 @@ def get_meta(key, default=None):
 def set_meta(key, value):
     _be().set_meta(key, value)
 
+def backup_run():
+    """Backup immediato: snapshot dei file (json) oppure dump con pg_dump/mysqldump (postgres/mysql), in
+    DATA_DIR/backup. Ritorna {"ok": bool, "file": nome|None, "error": str|None, "avvisi": [str]}; non solleva."""
+    return _be().backup_run()
+
 def backup_now():
-    """Snapshot immediato (backend json); no-op per i backend DB. Usato prima di una migrazione."""
-    be = _be()
-    return be.backup_now() if hasattr(be, "backup_now") else True
+    """Come backup_run() ma ritorna solo vero/falso."""
+    return bool(backup_run()["ok"])
+
+def backup_list():
+    """Backup presenti in DATA_DIR/backup, dal più recente: [{nome, creato, dimensione, tipo}]."""
+    import backup
+    return backup.list_backups(os.path.join(DATA_DIR, "backup"))
+
+def backup_last_time():
+    """Istante (epoch) dell'ultimo backup presente su disco, o None."""
+    import backup
+    return backup.last_backup_time(os.path.join(DATA_DIR, "backup"))
+
+def write_count():
+    """Numero di scritture fatte da questo processo (serve a sapere se c'è qualcosa di nuovo da salvare)."""
+    return _be().write_count()
 
 def _test_reset():
     """SOLO PER I TEST: svuota tutto. Rifiuta di agire se STORAGE_ALLOW_TEST_RESET != 1."""

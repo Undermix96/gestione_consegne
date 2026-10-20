@@ -70,6 +70,9 @@ services:
       DB_PASSWORD: test
     volumes:
       - ./tests:/app/tests:ro
+      # per verificare che gli strumenti di backup dell'immagine coincidano con i database del compose
+      - ./compose.yaml:/app/compose.yaml:ro
+      - ./compose.test.yaml:/app/compose.test.yaml:ro
     read_only: true
     tmpfs:
       - /tmp
