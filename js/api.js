@@ -39,6 +39,16 @@ export async function pingServer() {
   return r.json();
 }
 
+// ── Backup (superadmin) ──────────────────────────
+
+export async function fetchBackup() {
+  return _json(`${API}/backup`, { cache: 'no-store' });
+}
+
+export async function runBackup() {
+  return _json(`${API}/backup`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+}
+
 // ── Stato (polling) ──────────────────────────────
 
 export async function fetchStato() {

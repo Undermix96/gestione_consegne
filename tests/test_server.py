@@ -6,6 +6,7 @@ Il server gira in-process su una porta effimera, sullo storage del backend scelt
 
 ATTENZIONE: con i backend DB la suite SVUOTA le tabelle. Usare un database di test.
 """
+import gzip
 import hashlib
 import http.client
 import json
@@ -48,10 +49,9 @@ class Base(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls._tmp = None
-        if BACKEND == "json":
-            cls._tmp = tempfile.mkdtemp(prefix="gc_srv_test_")
-            st.DATA_DIR = cls._tmp
+        # cartella dati temporanea per tutti i backend: con json contiene i dati, con i database i backup
+        cls._tmp = tempfile.mkdtemp(prefix="gc_srv_test_")
+        st.DATA_DIR = cls._tmp
         st.init_storage_v2()
         cls.httpd = srv.make_server(0)
         cls.port = cls.httpd.server_address[1]
@@ -708,6 +708,52 @@ class TestStato(Base):
         self.assertGreater(after["consegne"], before["consegne"])
         self.assertGreater(after["giornate"], before["giornate"])
         self.assertEqual(after["squadre"], before["squadre"])
+
+
+class TestBackup(Base):
+    """Backup dal pannello del superadmin: elenco e backup immediato (snapshot json o dump SQL)."""
+
+    def setUp(self):
+        super().setUp()
+        shutil.rmtree(os.path.join(st.DATA_DIR, "backup"), ignore_errors=True)
+        st._be()._last_backup = srv.time.time()      # json: nessuno snapshot automatico prima delle scritture di prova
+
+    def test_solo_il_superadmin(self):
+        w = self.world()
+        for method in ("GET", "POST"):
+            self.assertEqual(self.call(method, "/api/backup", {} if method == "POST" else None, w["a2"])[0], 403, method)
+            self.assertEqual(self.call(method, "/api/backup", {} if method == "POST" else None, w["r1"])[0], 403, method)
+            self.assertEqual(self.call(method, "/api/backup", {} if method == "POST" else None)[0], 401, method)
+
+    def test_elenco_e_backup_immediato(self):
+        sa = self.superadmin()
+        code, d = self.call("GET", "/api/backup", token=sa)
+        self.assertEqual(code, 200)
+        self.assertEqual(d["backups"], [])
+        self.assertEqual((d["intervallo"], d["conservati"], d["backend"]), (st.BACKUP_MIN_INTERVAL, st.MAX_BACKUPS, BACKEND))
+        code, r = self.call("POST", "/api/backup", {}, sa)
+        self.assertEqual(code, 200, r)
+        self.assertTrue(r["ok"])
+        self.assertEqual([b["nome"] for b in r["backups"]], [r["file"]])             # la risposta contiene già l'elenco aggiornato
+        self.assertEqual(r["backups"][0]["tipo"], "snapshot" if BACKEND == "json" else "dump")
+        self.assertGreater(r["backups"][0]["dimensione"], 0)
+        code, d = self.call("GET", "/api/backup", token=sa)
+        self.assertEqual([b["nome"] for b in d["backups"]], [r["file"]])
+        if BACKEND != "json":
+            with gzip.open(os.path.join(st.DATA_DIR, "backup", r["file"]), "rt", encoding="utf-8") as f:
+                self.assertIn("superadmin", f.read())                                 # il dump contiene i dati veri
+
+    def test_backup_non_riuscito(self):
+        sa = self.superadmin()
+        shutil.rmtree(os.path.join(st.DATA_DIR, "backup"), ignore_errors=True)
+        with open(os.path.join(st.DATA_DIR, "backup"), "w") as f:                    # un file al posto della cartella
+            f.write("x")
+        self.addCleanup(lambda: os.path.exists(os.path.join(st.DATA_DIR, "backup")) and os.path.isfile(
+            os.path.join(st.DATA_DIR, "backup")) and os.remove(os.path.join(st.DATA_DIR, "backup")))
+        code, d = self.call("POST", "/api/backup", {}, sa)
+        self.assertEqual(code, 500)
+        self.assertIn("Backup non riuscito", d["error"])
+        self.assertEqual(self.call("GET", "/api/ping")[0], 200)                       # il server resta in piedi
 
 
 class TestVarie(Base):

@@ -37,8 +37,11 @@ services:
       DB_NAME:     "${DB_NAME:-gestione_consegne}"
       DB_USER:     "${DB_USER:-gcuser}"
       DB_PASSWORD: "${DB_PASSWORD:-}"
+      # Backup (vedi README): secondi tra due backup automatici (default 21600 = 6 ore, 0 = nessuno) e file conservati (30)
+      BACKUP_INTERVAL: "${BACKUP_INTERVAL:-}"
+      BACKUP_KEEP:     "${BACKUP_KEEP:-}"
     volumes:
-      - app_data:/data
+      - app_data:/data          # dati (json) e cartella backup/ (tutti i backend)
     depends_on:
       db_mysql:
         condition: service_healthy

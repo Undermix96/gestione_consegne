@@ -94,6 +94,45 @@ class HttpError(Exception):
         self.code = code
         self.message = message
 
+# ─── BACKUP AUTOMATICO ───────────────────────────────────────────────────────
+
+backup_stop = threading.Event()
+backup_seen = {"scritture": None}   # write_count() al momento dell'ultimo backup riuscito (None: ignoto)
+
+def backup_loop():
+    """Ogni BACKUP_INTERVAL secondi (default 6 ore) salva i dati, SE ci sono state modifiche dall'ultimo backup
+    (o se non ne esiste nessuno). Gira in un thread a parte: non rallenta le richieste. Vale per tutti i backend."""
+    intervallo = storage.BACKUP_MIN_INTERVAL
+    if intervallo <= 0:
+        log("[BACKUP] Backup automatico disattivato (BACKUP_INTERVAL=0)")
+        return
+    log(f"[BACKUP] Backup automatico ogni {intervallo}s se ci sono modifiche; si conservano gli ultimi {storage.MAX_BACKUPS}")
+    inizio = time.time()
+    attesa = min(60, intervallo)                       # il primo backup non parte durante l'avvio
+    tick = max(1, min(60, intervallo // 6))
+    riprova = 0.0
+    while not backup_stop.wait(tick):
+        try:
+            adesso = time.time()
+            ultimo = storage.backup_last_time()
+            if adesso < riprova or (ultimo is not None and adesso - ultimo < intervallo):
+                continue
+            if ultimo is None and adesso - inizio < attesa:
+                continue
+            scritture = storage.write_count()
+            if ultimo is not None and backup_seen["scritture"] == scritture:
+                continue                               # nessuna modifica dall'ultimo backup
+            r = storage.backup_run()
+            if r["ok"]:
+                backup_seen["scritture"] = scritture
+                log(f"[BACKUP] Backup automatico: {r['file']}")
+            else:
+                log(f"[BACKUP] Backup automatico non riuscito: {r['error']}", "error")
+                riprova = time.time() + min(intervallo, 600)
+        except Exception:
+            logging.exception("[BACKUP] Errore imprevisto nel backup automatico")
+            riprova = time.time() + 600
+
 # ─── CLIENT CONNESSI ─────────────────────────────────────────────────────────
 
 clients_lock = threading.Lock()
@@ -423,6 +462,28 @@ def h_change_password(ctx):
 def h_stato(ctx):
     register_client(ctx.ip, ctx.handler.headers.get("X-Client-ID"))
     return 200, get_timestamps(ctx.nid)
+
+# ─── ENDPOINT: backup (superadmin) ───────────────────────────────────────────
+
+def backup_info():
+    return {"backups": storage.backup_list(), "intervallo": storage.BACKUP_MIN_INTERVAL,
+            "conservati": storage.MAX_BACKUPS, "backend": os.environ.get("DB_BACKEND", "json").lower()}
+
+@route("GET", "/api/backup", SUPER)
+def h_get_backup(ctx):
+    return 200, backup_info()
+
+@route("POST", "/api/backup", SUPER)
+def h_run_backup(ctx):
+    """Backup immediato (snapshot json, oppure pg_dump/mysqldump). Sincrono: ritorna a backup concluso."""
+    scritture = storage.write_count()
+    r = storage.backup_run()
+    if not r["ok"]:
+        log(f"[BACKUP] Backup richiesto da '{ctx.username}' non riuscito: {r['error']}", "error")
+        raise HttpError(409 if "già in corso" in (r["error"] or "") else 500, f"Backup non riuscito: {r['error']}")
+    backup_seen["scritture"] = scritture
+    log(f"[BACKUP] Backup creato da '{ctx.username}': {r['file']}")
+    return 200, {"ok": True, "file": r["file"], "avvisi": r.get("avvisi", []), **backup_info()}
 
 # ─── ENDPOINT: negozi (superadmin) ───────────────────────────────────────────
 
@@ -950,6 +1011,7 @@ if __name__ == "__main__":
     log("=" * 50)
     log(f"Avvio Gestione Consegne V2 (porta {PORT}, backend {os.environ.get('DB_BACKEND', 'json')})...")
     init_data_layer()
+    threading.Thread(target=backup_loop, name="backup", daemon=True).start()
     server = make_server(PORT)
     log(f"Server in ascolto su 0.0.0.0:{PORT}")
     try:
@@ -957,5 +1019,6 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         pass
     finally:
+        backup_stop.set()
         log("Server fermato.")
         server.server_close()

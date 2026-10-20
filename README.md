@@ -136,6 +136,27 @@ Sostituire `mysql` con `postgres` per il backend PostgreSQL.
 
 Lo script è protetto da doppia esecuzione: dopo la prima importazione riuscita crea il file `/data/import_done`. Per forzare una reimportazione, rimuovere quel file dal volume prima di rieseguire.
 
+### Backup 🚧 V2
+
+I dati si salvano **in automatico ogni 6 ore, solo se ci sono state modifiche** (`BACKUP_INTERVAL` in secondi, `0` = disattivato), conservando gli ultimi 30 (`BACKUP_KEEP`). Vale per tutti i backend:
+
+| Backend | Cosa viene salvato | File |
+|---|---|---|
+| JSON | snapshot dei file dei dati | `backup/<collezione>.<data>.json` |
+| PostgreSQL | dump con `pg_dump` (versione 16, come il database del compose) | `backup/postgres-<database>.<data>.sql.gz` |
+| MySQL | dump con `mysqldump` (versione 8.4, come il database del compose) | `backup/mysql-<database>.<data>.sql.gz` |
+
+- **Dove:** nella cartella `backup` dei dati, cioè dentro `/data` del container. **Con un database serve una cartella montata su `/data`** (con compose c'è già il volume `app_data`; su DSM mappare una cartella del NAS su `/data`), altrimenti il backup fallisce con un avviso nei log e l'app continua a funzionare. La cartella deve essere scrivibile dall'utente 1001 del container.
+- **Dal pannello:** l'account `superadmin` ha la scheda **Backup**: elenco dei file e pulsante **Esegui backup ora**.
+- **Da riga di comando:** `docker exec <container> python backup.py` (codice di uscita 0 se riesce, 1 altrimenti): utile per un'attività pianificata di DSM o di cron. Dopo una migrazione la destinazione ha già un backup iniziale.
+- **Fuori dal server:** i file vanno copiati altrove con i propri strumenti (copia su un altro disco o NAS): un backup nello stesso posto dei dati non protegge da un guasto del disco.
+- **Ripristino** (in un database **vuoto**, con gli stessi strumenti che sono nell'immagine; fermare prima l'app):
+  - PostgreSQL: `gunzip -c backup/postgres-NOME.DATA.sql.gz | psql -h HOST -U UTENTE -d DATABASE -v ON_ERROR_STOP=1` (password in `PGPASSWORD`)
+  - MySQL: `gunzip -c backup/mysql-NOME.DATA.sql.gz | mysql -h HOST -u UTENTE DATABASE` (password in `MYSQL_PWD`)
+  - JSON: copiare i file di uno snapshot (stessa data nel nome) in una cartella dati nuova, togliendo la data dal nome (`consegne.2026-…json` → `consegne.json`, compreso `meta.json`).
+  - Con `docker run`/compose (esempio PostgreSQL, rete del database): `docker run --rm --network RETE -v CARTELLA_DATI:/data:ro -e PGPASSWORD=... IMMAGINE sh -c 'gunzip -c /data/backup/FILE.sql.gz | psql -h HOST -U UTENTE -d DATABASE -v ON_ERROR_STOP=1'`; su DSM lo stesso comando si lancia dalla scheda *Terminale* del container, oppure con un container temporaneo come per la migrazione.
+  - Poi avviare l'app sul database ripristinato: utenti, password e dati sono quelli del momento del backup.
+
 ### Healthcheck
 
 Docker verifica automaticamente che il server risponda su `/api/ping` ogni 15 secondi. Puoi monitorare lo stato con:
@@ -247,6 +268,7 @@ gestione_consegne/
 ├── storage.py              # Astrazione backend dati (json/mysql/postgres): V1 legacy + V2 per singolo record ✅
 ├── import_data.py          # Script importazione one-shot da dati.json legacy
 ├── migrate.py              # 🚧 V2: migrazione V1→V2 e tra backend (da compose, docker o GUI) ✅
+├── backup.py               # 🚧 V2: backup dei database (pg_dump / mysqldump), anche `python backup.py` ✅
 ├── requirements.txt        # Dipendenze Python (mysql-connector, psycopg2)
 ├── Dockerfile              # Immagine Docker
 ├── compose.yaml            # Orchestrazione container e profili DB
@@ -290,6 +312,8 @@ In V2 i file `api.js`, `sync.js`, `store.js`, `render.js`, `giornate.js`, `squad
 |-----------|---------|-------------|
 | `PORT` | `8080` | Porta interna del server |
 | `LOG_LEVEL` | `INFO` | Livello di log: `DEBUG` (include ogni richiesta HTTP) \| `INFO` \| `WARNING` \| `ERROR` |
+| `BACKUP_INTERVAL` | `21600` | Secondi tra due backup automatici (6 ore), solo se ci sono state modifiche; `0` = nessun backup automatico |
+| `BACKUP_KEEP` | `30` | Quanti backup conservare (per tipo), con qualsiasi backend |
 | `DB_BACKEND` | `json` | Backend dati: `json` \| `mysql` \| `postgres` |
 | `DATA_DIR` | `/data` | Directory file JSON (ignorata per mysql/postgres) |
 | `DB_HOST` | `db` | Host del database |

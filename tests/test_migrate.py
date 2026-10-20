@@ -413,6 +413,28 @@ class TestMigrazioneV1(Base):
         self.assertIn("Da definire", out)
         self.assertEqual(sorted(s["nome"] for s in self.read_dest()["squadre"]), ["Da definire", "Squadra A", "Squadra B"])
 
+    def test_backup_iniziale_della_destinazione(self):
+        if SQL:
+            # senza una cartella dati montata il backup non si può fare: avviso, ma la migrazione riesce
+            code, out = self.migrate("--execute")
+            self.assertEqual(code, 0, out)
+            self.assertIn("Backup iniziale della destinazione non eseguito", out)
+            st.init_storage_v2()
+            st._test_reset()
+            dati = os.path.join(self.tmp, "dati")
+            code, out = self.migrate("--execute", DATA_DIR=dati)
+            self.assertEqual(code, 0, out)
+            self.assertIn("Backup iniziale della destinazione: ", out)
+            files = os.listdir(os.path.join(dati, "backup"))
+            self.assertEqual(len(files), 1)
+            self.assertTrue(files[0].endswith(".sql.gz"), files)
+        else:
+            code, out = self.migrate("--execute")
+            self.assertEqual(code, 0, out)
+            self.assertIn("Backup iniziale della destinazione: snapshot-", out)
+            self.assertTrue(any(f.startswith("negozi.") for f in os.listdir(os.path.join(self.dest, "backup"))))
+        self.assert_v1_migrated(self.read_dest())                          # e i dati sono comunque quelli attesi
+
     def test_argomenti_al_posto_delle_variabili(self):
         code, out = self.migrate("run", "--execute", "--negozio-nome", "Sede di prova")
         self.assertEqual(code, 0, out)

@@ -8,6 +8,7 @@ import {
   fetchNegozi, createNegozio, updateNegozio, deleteNegozio,
   fetchTipiAccount, createTipoAccount, updateTipoAccount, deleteTipoAccount,
   fetchUtenti, createUtente, setPasswordUtente, setTipoAccount, deleteUtente,
+  fetchBackup, runBackup,
 } from './api.js';
 import { PERMESSI, DIPENDENZE, getPermessiPerGruppo, getMissingDeps } from './permessi.js';
 import { toast, escHtml } from './utils.js';
@@ -32,6 +33,7 @@ export async function renderPannelloSuperadmin(containerId = _containerId) {
         <button class="admin-tab active" data-tab="negozi"       onclick="_adminTab('negozi')">🏪 Negozi</button>
         <button class="admin-tab"         data-tab="tipi"         onclick="_adminTab('tipi')">🏷 Tipi account</button>
         <button class="admin-tab"         data-tab="utenti"       onclick="_adminTab('utenti')">👥 Utenti</button>
+        <button class="admin-tab"         data-tab="backup"       onclick="_adminTab('backup')">💾 Backup</button>
       </div>
       <div id="adminContent" class="admin-content"></div>
     </div>
@@ -65,9 +67,66 @@ async function _adminTab(tab) {
       _negozi = dn.negozi || [];
       _tipi   = dt.tipi_account || [];
       _renderUtentiAdmin(content);
+    } else if (tab === 'backup') {
+      _renderBackup(content, await fetchBackup());
     }
   } catch (e) {
     content.innerHTML = `<div style="padding:24px;color:var(--cancel)">Errore: ${escHtml(e.message)}</div>`;
+  }
+}
+
+// ── BACKUP ────────────────────────────────────────
+
+function _fmtDurata(secondi) {
+  if (!secondi) return 'disattivato';
+  if (secondi % 3600 === 0) return `ogni ${secondi / 3600} ${secondi === 3600 ? 'ora' : 'ore'}`;
+  if (secondi % 60 === 0) return `ogni ${secondi / 60} minuti`;
+  return `ogni ${secondi} secondi`;
+}
+
+function _fmtKb(byte) {
+  return byte < 1024 * 1024 ? `${Math.max(1, Math.round(byte / 1024))} KB` : `${(byte / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function _renderBackup(container, info) {
+  const righe = (info.backups || []).map(b => `
+    <tr>
+      <td><strong>${escHtml(b.nome)}</strong></td>
+      <td class="muted">${escHtml(b.tipo === 'dump' ? 'dump SQL' : 'snapshot dei file')}</td>
+      <td class="muted" style="font-family:'DM Mono',monospace;font-size:12px;">${escHtml(b.creato.replace('T', ' '))}</td>
+      <td class="muted">${escHtml(_fmtKb(b.dimensione))}</td>
+    </tr>`).join('');
+  container.innerHTML = `
+    <div class="admin-section-header">
+      <h3>Backup</h3>
+      <button class="btn btn-primary" id="btnBackupOra" onclick="_backupOra()">💾 Esegui backup ora</button>
+    </div>
+    <p class="muted" style="margin:0 0 14px;">
+      Backend dati: <strong>${escHtml(info.backend)}</strong> · backup automatico ${escHtml(_fmtDurata(info.intervallo))}
+      (solo se ci sono modifiche) · si conservano gli ultimi ${escHtml(String(info.conservati))}.
+      I file stanno nella cartella <code>backup</code> dei dati: vanno copiati fuori dal server con i propri strumenti.
+    </p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>File</th><th>Tipo</th><th>Creato il</th><th>Dimensione</th></tr></thead>
+        <tbody>${righe || '<tr><td colspan="4" style="text-align:center;padding:32px;color:var(--muted)">Nessun backup ancora.</td></tr>'}</tbody>
+      </table>
+    </div>
+  `;
+  window._backupOra = _backupOra;
+}
+
+async function _backupOra() {
+  const btn = document.getElementById('btnBackupOra');
+  if (btn) { btn.disabled = true; btn.textContent = 'Backup in corso…'; }
+  try {
+    const r = await runBackup();
+    toast(`Backup creato: ${r.file}`);
+    if (r.avvisi && r.avvisi.length) toast(`⚠️ ${r.avvisi[0]}`, 6000);
+    _renderBackup(document.getElementById('adminContent'), r);
+  } catch (e) {
+    toast(`Errore: ${e.data?.error || e.message}`, 6000);
+    if (btn) { btn.disabled = false; btn.textContent = '💾 Esegui backup ora'; }
   }
 }
 

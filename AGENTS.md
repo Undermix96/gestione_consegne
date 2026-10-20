@@ -4,7 +4,7 @@ Documento di contesto per agenti AI. Descrive stato attuale del progetto, archit
 
 ---
 
-> **Stato del branch `v2-docker`:** questo documento descrive la **V2** (obiettivo del branch). **`storage.py` è già V2** (fase 1) e lo è anche **`server.py`** (fase 2, collaudato con `tests/test_server.py` su json, PostgreSQL e MySQL); anche il **frontend** (fase 3, collaudato con controlli statici in Node e con un giro completo nel browser contro il server V2). Tutte le fasi sono completate, compreso il collaudo integrato (fase 5) e la `squadra_id` obbligatoria (fase 6), vedi [§11](#11-stato-di-implementazione-v2). **🚧 V2** indica una funzionalità della V2 non ancora presente su `main`; dove è già implementata e collaudata su questo branch il titolo lo dice (es. "implementata", ✅). Il design V2 proviene dal branch `dev` (versione Windows, mai andata in produzione) ed è stato adattato a Docker e allo storage a più backend.
+> **Stato del branch `v2-docker`:** questo documento descrive la **V2** (obiettivo del branch). **`storage.py` è già V2** (fase 1) e lo è anche **`server.py`** (fase 2, collaudato con `tests/test_server.py` su json, PostgreSQL e MySQL); anche il **frontend** (fase 3, collaudato con controlli statici in Node e con un giro completo nel browser contro il server V2). Tutte le fasi sono completate, compreso il collaudo integrato (fase 5), la `squadra_id` obbligatoria (fase 6) e il backup dei database (fase 7), vedi [§11](#11-stato-di-implementazione-v2). **🚧 V2** indica una funzionalità della V2 non ancora presente su `main`; dove è già implementata e collaudata su questo branch il titolo lo dice (es. "implementata", ✅). Il design V2 proviene dal branch `dev` (versione Windows, mai andata in produzione) ed è stato adattato a Docker e allo storage a più backend.
 
 ## Indice
 
@@ -114,12 +114,14 @@ gestione_consegne/
 ├── storage.py              # Astrazione backend dati (json/mysql/postgres): V1 legacy + V2 per singolo record ✅
 ├── import_data.py          # Importazione one-shot da dati.json legacy (V1)
 ├── migrate.py              # 🚧 V2: migrazione V1→V2 e tra backend (vedi §11, fase 4) ✅
+├── backup.py               # 🚧 V2: backup dei database (pg_dump / mysqldump), elenco, `python backup.py` (fase 7) ✅
 ├── compose.migrate.yaml    # 🚧 V2: la migrazione come stack autonomo (Portainer, DSM)
 ├── tests/                  # 🚧 V2: suite di contratto di storage.py (non inclusa nell'immagine)
 │   ├── test_storage_contract.py
 │   ├── js/run.mjs          # 🚧 V2: controlli statici del frontend e test di sha256.js (Node, solo nei test) ✅
 │   ├── test_migrate.py     # 🚧 V2: test di migrate.py (logica pura e da un capo all'altro) ✅
-│   ├── integrazione_*.py   # 🚧 V2: collaudo integrato sul sistema vero (processi, HTTP, tutti i backend) ✅
+│   ├── test_backup.py      # 🚧 V2: test di backup.py (dump veri su postgres/mysql, errori, versioni degli strumenti) ✅
+│   ├── integrazione_*.py   # 🚧 V2: collaudo integrato sul sistema vero (processi, HTTP, tutti i backend, backup e ripristino) ✅
 │   ├── dbtool.py           # strumento dei test di integrazione (opera su un backend per processo)
 │   ├── db-init/            # script che creano il secondo database di test (sorgente V1)
 │   ├── stack.sh            # prova con le immagini vere (compose, docker, stack): da lanciare sull'host ✅
@@ -211,6 +213,8 @@ Protetto da file flag `/data/import_done`. Per i backend DB il container DB deve
 |-----------|---------|------|
 | `PORT` | `8080` | Porta interna |
 | `LOG_LEVEL` | `INFO` | `DEBUG` mostra anche ogni richiesta HTTP (`log_message`) |
+| `BACKUP_INTERVAL` | `21600` | Secondi tra due backup automatici (6 ore), solo se ci sono state modifiche; `0` = nessun backup automatico (fase 7) |
+| `BACKUP_KEEP` | `30` | Backup conservati per tipo, per tutti i backend (fase 7) |
 | `DB_BACKEND` | `json` | `json` \| `mysql` \| `postgres` |
 | `DATA_DIR` | `/data` | Directory JSON |
 | `DB_HOST` | `db` | Host DB |
@@ -261,6 +265,8 @@ Sostituiscono `GET/POST /api/data` e `POST /api/log`. `GET /api/ping` resta senz
 | POST | `/api/auth/change-password` | Token | — | Cambia propria password |
 | GET | `/api/ping` | Opzionale | — | Heartbeat + contatore client |
 | GET | `/api/stato` | Token | — (no superadmin) | Timestamp categorie per polling |
+| GET | `/api/backup` | Token | superadmin | Elenco dei backup (nome, tipo, data, dimensione), intervallo e numero conservati |
+| POST | `/api/backup` | Token | superadmin | Backup immediato (snapshot json o dump SQL); risponde a backup concluso con l'elenco aggiornato (409 se uno è già in corso, 500 se fallisce) |
 | GET | `/api/negozi` | Token | superadmin | Lista negozi |
 | POST | `/api/negozi` | Token | superadmin | Crea negozio |
 | PUT | `/api/negozi/:id` | Token | superadmin | Rinomina negozio |
@@ -426,7 +432,7 @@ Tutto su stdout (catturato da Docker). Formato: `YYYY-MM-DD HH:MM:SS [LEVEL] mes
 2026-06-18 10:15:00 [INFO]  [DATI]         'mario.rossi' — Nuova consegna: Rossi Mario
 2026-06-18 10:30:00 [WARN]  [AUTH]         Login fallito — password errata per 'pippo' da 192.168.1.33
 ```
-Categorie: `[AUTH]`, `[UTENTI]`, `[DATI]`, `[NEGOZI]`, `[TIPI_ACCOUNT]`. L'IP nei log di autenticazione è quello visto dal container (in Docker può essere quello del gateway, vedi "Contatore client connessi").
+Categorie: `[AUTH]`, `[UTENTI]`, `[DATI]`, `[NEGOZI]`, `[TIPI_ACCOUNT]`, `[BACKUP]`. L'IP nei log di autenticazione è quello visto dal container (in Docker può essere quello del gateway, vedi "Contatore client connessi").
 
 ### Contatore client connessi
 Heartbeat tramite `client_heartbeat{}`, chiave = header `X-Client-ID` (UUID-like generato dal browser con `crypto.getRandomValues()`, salvato in `sessionStorage`), con fallback sull'IP se l'header manca (retrocompatibilità, es. richieste esterne senza frontend). Un client è "attivo" se ha fatto una richiesta (ping o data) negli ultimi 15 secondi.
@@ -490,7 +496,10 @@ giornata_assegna(giornata_id, consegna_ids)       # aggiunge in coda, idempotent
 giornata_rimuovi(giornata_id, consegna_id)        # idempotente
 giornata_riordina(giornata_id, ordered_ids)       # permutazione esatta
 get_meta(key, default=None) / set_meta(key, value)   # metadati; chiavi riservate: schema_version, migrazione_in_corso
-backup_now()                            # snapshot immediato (json); no-op per i backend DB
+backup_now() / backup_run()             # backup immediato: snapshot (json) o dump pg_dump/mysqldump (postgres/mysql) in DATA_DIR/backup;
+                                        # backup_run() → {"ok", "file", "error", "avvisi"}; non solleva eccezioni (fase 7)
+backup_list() / backup_last_time()      # backup presenti su disco (dal più recente) / istante dell'ultimo
+write_count()                           # scritture fatte dal processo (il server decide se c'è qualcosa di nuovo da salvare)
 ```
 Collezioni: `consegne`, `giornate`, `squadre`, `negozi`, `tipi_account`, `utenti`. La specifica (campi obbligatori, default, unicità, riferimenti) è dichiarata una sola volta nel codice (`_COLL`) e vale per tutti i backend.
 
@@ -555,7 +564,7 @@ File separati in `DATA_DIR`, ciascuno **un array di record**: `consegne.json`, `
 - **Lock unico** per tutte le operazioni (un solo `RLock`): il carico è minimo e si escludono i deadlock tra collezioni.
 - **Scrittura atomica** (`.tmp` + `fsync` + `os.replace()`), 2 tentativi come in V1.
 - **File illeggibile → `StorageError`**: non si restituisce mai un valore di default che verrebbe poi riscritto sopra i dati.
-- **Backup** in `DATA_DIR/backup/` di tutte le collezioni e di `meta.json`: **al massimo uno ogni 5 minuti** (`BACKUP_MIN_INTERVAL = 300`, non più uno a ogni scrittura) e sempre su richiesta con `backup_now()` (prima di una migrazione). Si conservano gli ultimi 20 per file.
+- **Backup** in `DATA_DIR/backup/` di tutte le collezioni e di `meta.json` (snapshot `<collezione>.<data>.json`): prima di una scrittura **al massimo uno ogni `BACKUP_INTERVAL` (6 ore)**, più quelli del thread del server e quelli su richiesta con `backup_now()` (dopo una migrazione, dal pannello del superadmin). Si conservano gli ultimi `BACKUP_KEEP` (30) per file. Più snapshot nello stesso secondo si sovrascrivono (stesso nome).
 - L'API è per record, ma internamente il backend JSON riscrive il file della collezione: adatto a installazioni piccole (scelta consapevole, vedi §10).
 - Eliminare una consegna scrive prima le giornate e poi la consegna: un'interruzione lascia al più una consegna non assegnata, mai un riferimento orfano.
 
@@ -573,6 +582,15 @@ Il campo `extra` (JSONB in Postgres, JSON in MySQL) cattura eventuali campi aggi
 
 ⚠️ **Difetto noto della V1 sui backend SQL** (rilevato leggendo il codice, non eseguito su un DB reale): i campi camelCase noti vengono scritti in colonne snake_case ma **non vengono riconvertiti in lettura**. Le squadre tornano con `color_idx` invece di `colorIdx` (il frontend usa solo `colorIdx`: i colori andrebbero persi dopo un ricaricamento) e le consegne restituiscono sia le chiavi snake_case sia quelle camelCase salvate in `extra`. La V2 non ha questo difetto (le chiavi in uscita sono sempre camelCase). `main` non è stato modificato.
 
+### Backup dei database (fase 7 ✅)
+`backup.py` + `storage.backup_run()`. La stessa cartella dei backup json, **`DATA_DIR/backup/`**: con un database serve quindi una cartella montata su `/data` (con compose c'è `app_data`); se non è scrivibile il backup fallisce con un avviso e l'app continua.
+- **Strumenti nell'immagine, alla versione dei database di `compose.yaml`:** `pg_dump` 16 (repository PGDG) e `mysqldump` 8.4 (repository MySQL, chiave GPG 2025: una rotazione della chiave può far fallire la build) installati nel `Dockerfile` con gli argomenti `PG_MAJOR`, `MYSQL_COMPONENT`, `MYSQL_SERIES`; la build verifica la versione e `tests/test_backup.py` controlla che coincida con le immagini `postgres:` e `mysql:` di `compose.yaml` e `compose.test.yaml`. I pacchetti di Debian non vanno bene: `pg_dump` rifiuta un server più nuovo di lui (Debian 12 ha la 15) e `mariadb-client` non è `mysqldump` 8.4. A ogni backup si confronta anche la versione del server con quella dello strumento (avviso nel log e nella risposta).
+- **Formato:** SQL testuale compresso `<backend>-<database>.<AAAA-MM-GG_hh-mm-ss>[-n].sql.gz` (`pg_dump --no-owner --no-acl`; `mysqldump --single-transaction --routines --triggers --events --no-tablespaces --default-character-set=utf8mb4 --set-gtid-purged=OFF`, quindi funziona con l'utente dell'app e la copia è coerente).
+- **Sicurezza e robustezza:** password solo da variabile d'ambiente (`PGPASSWORD`, `MYSQL_PWD`), mai negli argomenti né nei log; scrittura in `.partial` e rinomina solo a dump concluso con codice 0 **e** riga di chiusura presente (altrimenti scartato); timeout (`BACKUP_TIMEOUT`, 900 s); un solo backup alla volta; più backup nello stesso secondo ricevono un numero progressivo maggiore di quelli presenti (mai riusato: la conservazione cancellerebbe il nuovo); ultimi `BACKUP_KEEP` (30) per database.
+- **Pianificazione (tutti i backend):** il thread `backup_loop()` di `server.py` salva ogni `BACKUP_INTERVAL` secondi (default 21600 = 6 ore), **solo se** ci sono state modifiche dall'ultimo backup (`write_count()`); un processo appena avviato non sa cosa è cambiato mentre era fermo, quindi ne fa uno solo se l'ultimo ha più di un intervallo; se non esiste nessun backup ne fa uno dopo 60 s dall'avvio. Se fallisce riprova dopo al massimo 10 minuti. `BACKUP_INTERVAL=0` lo disattiva (anche gli snapshot json prima delle scritture). Gira fuori dalle richieste e non le rallenta.
+- **Altri modi:** dopo una migrazione (`migrate.py`: backup iniziale della destinazione, non critico), dal pannello del superadmin (scheda "Backup": elenco e "Esegui backup ora", `GET/POST /api/backup`), e `python backup.py` (codice 0/1; per un'attività pianificata di DSM: `docker exec <container> python backup.py`). Le copie fuori dal NAS sono a carico di strumenti esterni.
+- **Ripristino:** non c'è uno strumento (operazione rischiosa): si ripristina in un database VUOTO con gli stessi strumenti dell'immagine, `gunzip -c FILE.sql.gz | psql -h HOST -U UTENTE -d DB -v ON_ERROR_STOP=1` (PostgreSQL, con `PGPASSWORD`) oppure `gunzip -c FILE.sql.gz | mysql -h HOST -u UTENTE DB` (MySQL, con `MYSQL_PWD`); per json si ricopiano i file di uno snapshot togliendo la data dal nome. `pg_dump` 16.10+ scrive righe `\restrict`/`\unrestrict`: ripristinare con lo `psql` dell'immagine (stessa versione). Provato nei test su entrambi i database e su json (identico all'originale, il server parte e le credenziali valgono).
+
 ### Backend PostgreSQL V2 🚧 (passo 1b — implementato)
 Implementazione in `storage.py`: la classe `_SqlV2` contiene tutta la logica comune ai database SQL, `_PgV2` solo il dialetto (connessione, `JSONB`, mappatura errori, upsert dei metadati). Il backend MySQL (`_MysqlV2`, passo 1c) usa la stessa base.
 - **Schema generato dalla specifica** (`_COLL` + `_COLS`): tabelle e colonne non sono scritte a mano due volte, quindi non possono divergere dal codice. Creato **solo su un database vuoto**; se esistono già tabelle vengono soltanto verificate (vedi "Controllo dello schema all'avvio"): un database con schema V1 o alterato viene rifiutato, mai modificato.
@@ -582,7 +600,7 @@ Implementazione in `storage.py`: la classe `_SqlV2` contiene tutta la logica com
 - **Ordine di inserimento garantito** dalla colonna `seq` (`ORDER BY seq`).
 - **`utenti.username`:** unicità e filtri tramite la colonna derivata `username_ci = casefold(username)`, calcolata in Python con la stessa funzione del backend json (non `lower()` di PostgreSQL, che darebbe risultati diversi su caratteri particolari). `tipi_account.nome` è univoco **con distinzione di maiuscole**.
 - **`JSONB`** per `articoli`, `permessi` e `extra` (campi sconosciuti allo schema, restituiti invariati).
-- **Nessun backup applicativo** per i backend DB (`backup_now()` non fa nulla): usare gli strumenti del database (`pg_dump`).
+- **Backup (fase 7):** `backup_now()` lancia `pg_dump` (vedi "Backup dei database" in §6).
 - La funzione di reset usata dai test rifiuta di agire se `DB_NAME` non termina con `_test`.
 
 ### Backend MySQL V2 🚧 (passo 1c — implementato)
@@ -594,7 +612,7 @@ Classe `_MysqlV2`: stessa logica comune di PostgreSQL (`_SqlV2`), cambia solo il
 - La colonna `username_ci` ha lunghezza `3 × 150`: `casefold()` può allungare una stringa fino a 3 volte (`ß` → `ss`).
 - Upsert dei metadati con `INSERT ... AS new ... ON DUPLICATE KEY UPDATE`; indici sulle chiavi esterne creati automaticamente da InnoDB.
 - **Prestazioni:** ogni operazione apre una connessione. Misurato in sviluppo (MySQL 8.0 locale): ~32 ms per operazione contro ~4 ms di PostgreSQL, quasi tutto handshake TLS e autenticazione. In Docker la suite completa richiede circa 50 s su MySQL contro circa 9 s su PostgreSQL. Irrilevante per l'uso previsto; riuso delle connessioni o disattivazione di TLS su rete Docker privata restano valutabili (punto aperto in §11).
-- Nessun backup applicativo (`mysqldump`/strumenti del DB). Collaudato con la suite completa su `mysql:8.4` in Docker (e su 8.0 in sviluppo).
+- **Backup (fase 7):** `backup_now()` lancia `mysqldump` (vedi "Backup dei database" in §6). Collaudato con la suite completa su `mysql:8.4` in Docker (e su 8.0 in sviluppo).
 
 ### Schema DB V2 🚧 (generato da `storage.py`, dialetto PostgreSQL)
 Per le installazioni V2 lo schema è **nuovo** (non si estendono le tabelle V1). Fa fede il codice: questo elenco è l'output di `_PgV2._ddl_statements()`. Su MySQL cambiano solo i tipi (`JSON`, `LONGTEXT`, `BIGINT AUTO_INCREMENT`), la clausola `DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_bin` e l'assenza degli `CREATE INDEX` espliciti.
@@ -1004,6 +1022,7 @@ Questa sezione traccia l'avanzamento della V2 sul branch `v2-docker` (partito da
 | 4 | `migrate.py` | ✅ completata — vedi "Scelte implementative della fase 4"; 27 test (logica pura e da un capo all'altro su json, `postgres:16`, `mysql:8.4`), provata anche con `docker run`, `docker compose` e uno stack in stile Portainer |
 | 5 | Test integrato: migrazione → primo login superadmin → negozio → tipo account → utente → login → operatività, su tutti e 3 i backend | ✅ completata — vedi "Collaudo integrato della fase 5" |
 | 6 | `squadra_id` al posto del nome squadra nelle giornate (storage, server, frontend, migrazione) | ✅ completata (anticipata prima della fase 5) — vedi "Scelte implementative della fase 6" |
+| 7 | Backup dei database: `pg_dump` / `mysqldump` nell'immagine (stessa versione dei database di compose), `backup_now()` sui database, pianificazione ogni 6 ore per tutti i backend (ultimi 30), backup dal pannello del superadmin, `python backup.py`, ripristino provato | ✅ completata — vedi "Backup dei database" in §6; test sul sistema vero (pianificazione, conservazione, ripristino identico) su json, PostgreSQL e MySQL |
 
 Ogni fase è un commit separato (o gruppo di commit) rivisto prima di passare alla successiva.
 

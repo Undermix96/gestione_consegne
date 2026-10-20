@@ -42,8 +42,16 @@ log = logging.getLogger(__name__)
 BACKEND       = os.environ.get("DB_BACKEND", "json").lower()
 DATA_DIR      = os.environ.get("DATA_DIR", "/data")
 WRITE_RETRIES = 2
-MAX_BACKUPS   = int(os.environ.get("BACKUP_KEEP", 30))            # backup conservati per tipo (tutti i backend)
-BACKUP_MIN_INTERVAL = int(os.environ.get("BACKUP_INTERVAL", 21600))   # secondi tra due backup automatici (6 ore); 0 = nessuno
+def _env_int(name, default):
+    """Intero da una variabile d'ambiente; vuota o assente = default (compose passa le variabili vuote)."""
+    v = os.environ.get(name, "").strip()
+    try:
+        return int(v) if v else default
+    except ValueError:
+        raise ValueError(f"{name} deve essere un numero intero (valore: {v!r})")
+
+MAX_BACKUPS   = _env_int("BACKUP_KEEP", 30)                   # backup conservati per tipo (tutti i backend)
+BACKUP_MIN_INTERVAL = _env_int("BACKUP_INTERVAL", 21600)      # secondi tra due backup automatici (6 ore); 0 = nessuno
 
 # ─── INIT ────────────────────────────────────────────────────────────────────
 

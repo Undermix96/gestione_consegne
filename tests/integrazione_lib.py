@@ -342,11 +342,16 @@ def check_integrity(dump):
     return errs
 
 
-def bring_up(dst, data, tmp, src="json"):
+def bring_up(dst, data, tmp, src="json", extra=None):
     """Sistema completo come in produzione: sorgente V1 → migrazione → server vero → superadmin, tipo
-    account e due utenti nel negozio migrato. Ritorna un dizionario con tutto ciò che serve ai test."""
+    account e due utenti nel negozio migrato. Ritorna un dizionario con tutto ciò che serve ai test.
+    `extra`: altre variabili d'ambiente (es. BACKUP_INTERVAL). Con un database c'è anche una cartella
+    dati (DATA_DIR) in cui finiscono i backup."""
     senv = prepare_v1_source(src, tmp, data)
-    denv = fresh_dest(dst, tmp)
+    denv = {**fresh_dest(dst, tmp), **(extra or {})}
+    if "DATA_DIR" not in denv:
+        denv["DATA_DIR"] = os.path.join(tmp, "data")
+        os.makedirs(denv["DATA_DIR"], exist_ok=True)
     mig_env = {**denv, **senv, "MIGRATE_OUT": os.path.join(tmp, "export.json"), "MIGRATE_EXECUTE": "1"}
     t0 = time.time()
     rc, out = migrate(mig_env)

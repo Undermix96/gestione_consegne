@@ -696,6 +696,13 @@ def run_import(payload, execute, negozio_nome, drop_orphans, create_db, non_asse
         raise MigrateError(f"verifica fallita ({len(problems)} differenze)")
     st.set_meta(FLAG, False)
     log.info("Verifica superata: %s", ", ".join(f"{len(plan[c])} {c}" for c in COLLECTIONS_V2 if plan[c]))
+    # backup iniziale della destinazione (non critico: la migrazione è già riuscita e verificata)
+    r = st.backup_run()
+    if r["ok"]:
+        log.info("Backup iniziale della destinazione: %s", r["file"])
+    else:
+        log.warning("Backup iniziale della destinazione non eseguito (%s). La migrazione è comunque riuscita; "
+                    "con un database serve una cartella montata su /data per i backup.", r["error"])
     return plan
 
 
