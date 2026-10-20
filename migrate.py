@@ -36,6 +36,8 @@ Opzioni (argomento / variabile)
   --out FILE        MIGRATE_OUT           file di esportazione            (default /migration/export-<data>.json)
   --in FILE         MIGRATE_IN            file da importare (comando import)
   --negozio-nome    MIGRATE_NEGOZIO_NOME  nome del negozio creato da V1   (default "Negozio principale")
+  --non-assegnata  MIGRATE_SQUADRA_NON_ASSEGNATA  nome della squadra per le giornate V1 senza squadra, creata
+                                          SOLO se serve (default "Non assegnata")
   --create-db       MIGRATE_CREATE_DB     1 = crea il database di destinazione se non esiste (mysql/postgres)
   --keep-orphans    MIGRATE_KEEP_ORPHANS  1 = i riferimenti a consegne inesistenti bloccano la migrazione
                                           (default: vengono scartati e riportati nel rapporto)
@@ -470,7 +472,62 @@ def fix_giornata_refs(g, ids, rep, drop_orphans, label):
         out.append(cid)
     g["consegneIds"] = out
 
-def build_plan(kind, data, negozio_nome, drop_orphans, rep):
+def resolve_squadre(plan, nid, non_assegnata, rep):
+    """V1: la giornata indica la squadra con il NOME; in V2 la squadra è obbligatoria e si indica con l'id.
+    Ordine delle regole: nome uguale → quello senza maiuscole e spazi (avviso) → squadra mancante creata
+    (avviso); nome vuoto → squadra `non_assegnata`, creata SOLO se almeno una giornata ne ha bisogno."""
+    squadre = plan["squadre"]
+    exact, folded = {}, {}
+    for s in squadre:
+        nome = s.get("nome")
+        if not isinstance(nome, str):
+            continue
+        if nome in exact:
+            rep.warn(f"due squadre con lo stesso nome '{nome}': le giornate usano la prima ({exact[nome]['id']})")
+            continue
+        exact[nome] = s
+        folded.setdefault(nome.strip().casefold(), s)
+
+    def create(nome):
+        s = {"id": "sq_" + secrets.token_hex(8), "negozio_id": nid, "nome": nome, "colorIdx": len(squadre) % 8}
+        squadre.append(s)
+        exact[nome] = s
+        folded.setdefault(nome.strip().casefold(), s)
+        return s
+
+    senza, non_ass = 0, None
+    for g in plan["giornate"]:
+        nome = g.pop("squadra", None)
+        if nome is not None and not isinstance(nome, str):
+            rep.error(f"giornata {g.get('id')!r}: la squadra non è un testo ({type(nome).__name__})")
+            continue
+        label = f"giornata {g.get('id')} ({g.get('data')})"
+        if not nome or not nome.strip():
+            if non_ass is None:
+                non_ass = folded.get(non_assegnata.strip().casefold())
+                if non_ass is None:
+                    non_ass = create(non_assegnata)
+                    rep.note(f"verrà creata la squadra '{non_assegnata}' ({non_ass['id']}) per le giornate senza squadra")
+                else:
+                    rep.note(f"le giornate senza squadra usano la squadra già esistente '{non_ass['nome']}'")
+            senza += 1
+            g["squadra_id"] = non_ass["id"]
+            continue
+        s = exact.get(nome)
+        if s is None:
+            s = folded.get(nome.strip().casefold())
+            if s is not None:
+                rep.warn(f"{label}: la squadra '{nome}' corrisponde a '{s['nome']}' (maiuscole o spazi diversi)")
+        if s is None:
+            s = create(nome.strip())
+            rep.warn(f"{label}: la squadra '{nome}' non esiste tra le squadre: creata ({s['id']})")
+        g["squadra_id"] = s["id"]
+    if senza:
+        rep.note(f"{senza} giornate senza squadra assegnate a '{non_ass['nome']}'")
+    else:
+        rep.note("tutte le giornate hanno già una squadra: nessuna squadra 'non assegnata' necessaria")
+
+def build_plan(kind, data, negozio_nome, drop_orphans, rep, non_assegnata="Non assegnata"):
     """Dati dell'esportazione → record V2 per collezione (nell'ordine di inserimento)."""
     plan = {c: [] for c in COLLECTIONS_V2}
     if kind == "v1":
@@ -488,6 +545,7 @@ def build_plan(kind, data, negozio_nome, drop_orphans, rep):
                 n.pop("consegneCompletate", None)
                 n["negozio_id"] = nid
                 plan[coll].append(n)
+        resolve_squadre(plan, nid, non_assegnata, rep)
     else:
         for coll in COLLECTIONS_V2:
             for r in data.get(coll, []):
@@ -496,6 +554,9 @@ def build_plan(kind, data, negozio_nome, drop_orphans, rep):
                     continue
                 n = clean(r)
                 n.pop("versione", None)    # la gestisce lo storage (riparte da 1)
+                if coll == "giornate" and "squadra" in n:
+                    rep.error(f"giornata {n.get('id')!r}: ha il vecchio campo 'squadra' (archivio V2 di un'edizione "
+                              f"precedente, senza 'squadra_id')")
                 plan[coll].append(n)
     ids = {c.get("id") for c in plan["consegne"]}
     for g in plan["giornate"]:
@@ -589,14 +650,14 @@ def verify(plan):
                 problems.append(f"{coll} {e.get('id')!r} (posizione {i + 1}): campi diversi {diff}")
     return problems
 
-def run_import(payload, execute, negozio_nome, drop_orphans, create_db):
+def run_import(payload, execute, negozio_nome, drop_orphans, create_db, non_assegnata="Non assegnata"):
     import storage as st
     kind = payload["kind"]
     data = payload["dati"]
     log.info("Destinazione: %s", "json in " + st.DATA_DIR if st.BACKEND == "json"
              else f"{st.BACKEND} {env('DB_HOST', 'db')}/{env('DB_NAME', 'gestione_consegne')}")
     rep = Report()
-    plan = build_plan(kind, data, negozio_nome, drop_orphans, rep)
+    plan = build_plan(kind, data, negozio_nome, drop_orphans, rep, non_assegnata)
     validate_plan(plan, rep)
     log.info("Record da scrivere: %s", ", ".join(f"{len(plan[c])} {c}" for c in COLLECTIONS_V2 if plan[c]) or "nessuno")
     dest = check_destination(st, execute, create_db)
@@ -656,7 +717,7 @@ def load_export(path):
 def cmd_run(a):
     out = a.out or default_out_path()
     payload = do_export(a.source_kind, out)
-    run_import(payload, a.execute, a.negozio_nome, not a.keep_orphans, a.create_db)
+    run_import(payload, a.execute, a.negozio_nome, not a.keep_orphans, a.create_db, a.non_assegnata)
 
 def cmd_export(a):
     do_export(a.source_kind, a.out or default_out_path())
@@ -665,7 +726,7 @@ def cmd_export(a):
 def cmd_import(a):
     if not a.input:
         raise PreflightError("indicare il file da importare (--in o MIGRATE_IN)")
-    run_import(load_export(a.input), a.execute, a.negozio_nome, not a.keep_orphans, a.create_db)
+    run_import(load_export(a.input), a.execute, a.negozio_nome, not a.keep_orphans, a.create_db, a.non_assegnata)
 
 def build_parser():
     p = argparse.ArgumentParser(prog="migrate.py", description="Migrazione dei dati verso la V2 (vedi l'intestazione del file).")
@@ -675,6 +736,7 @@ def build_parser():
     p.add_argument("--out", default=env("MIGRATE_OUT"))
     p.add_argument("--in", dest="input", default=env("MIGRATE_IN"))
     p.add_argument("--negozio-nome", default=env("MIGRATE_NEGOZIO_NOME", "Negozio principale"))
+    p.add_argument("--non-assegnata", default=env("MIGRATE_SQUADRA_NON_ASSEGNATA", "Non assegnata"))
     p.add_argument("--create-db", action="store_true", default=truthy(env("MIGRATE_CREATE_DB")))
     p.add_argument("--keep-orphans", action="store_true", default=truthy(env("MIGRATE_KEEP_ORPHANS")))
     return p

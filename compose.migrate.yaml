@@ -51,6 +51,7 @@ services:
       # ── opzioni ──
       MIGRATE_EXECUTE:      "${MIGRATE_EXECUTE:-}"        # 1 = scrive davvero
       MIGRATE_CREATE_DB:    "${MIGRATE_CREATE_DB:-}"      # 1 = crea il database di destinazione se manca
+      MIGRATE_SQUADRA_NON_ASSEGNATA: "${MIGRATE_SQUADRA_NON_ASSEGNATA:-}"
       MIGRATE_NEGOZIO_NOME: "${MIGRATE_NEGOZIO_NOME:-}"
       MIGRATE_KEEP_ORPHANS: "${MIGRATE_KEEP_ORPHANS:-}"
     volumes:

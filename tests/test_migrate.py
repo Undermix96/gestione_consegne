@@ -134,7 +134,12 @@ class TestPure(unittest.TestCase):
             self.assertTrue(all(r["negozio_id"] == nid for r in plan[coll]), coll)
         self.assertEqual([c["id"] for c in plan["consegne"]], ["c1", "c2", "c3"])       # id conservati, ordine invariato
         self.assertEqual(plan["giornate"][0]["consegneIds"], ["c2", "c1"])
-        self.assertEqual(plan["giornate"][0]["squadra"], "Squadra A")                    # resta il nome
+        self.assertEqual(plan["giornate"][0]["squadra_id"], "sq1")                       # il nome diventa l'id
+        self.assertNotIn("squadra", plan["giornate"][0])
+        self.assertEqual([s["nome"] for s in plan["squadre"]], ["Squadra A", "Squadra B", "Non assegnata"])
+        na = plan["squadre"][2]
+        self.assertEqual(plan["giornate"][1]["squadra_id"], na["id"])                    # g2 non aveva squadra
+        self.assertEqual((na["negozio_id"], na["colorIdx"]), (nid, 2))
         self.assertEqual(rep.errors, [])
 
     def test_orfani_e_doppioni(self):
@@ -146,6 +151,75 @@ class TestPure(unittest.TestCase):
         self.assertEqual(rep.errors, [])
         plan, rep = self.plan(data, drop=False)
         self.assertEqual(len(rep.errors), 1)
+
+    def test_non_assegnata_solo_se_necessaria(self):
+        data = copy.deepcopy(V1)
+        data["giornate"][1]["squadra"] = "Squadra B"
+        plan, rep = self.plan(data)
+        self.assertEqual([s["nome"] for s in plan["squadre"]], ["Squadra A", "Squadra B"])    # nessuna squadra in più
+        self.assertEqual([g["squadra_id"] for g in plan["giornate"]], ["sq1", "sq2"])
+        self.assertTrue(any("nessuna squadra 'non assegnata'" in n for n in rep.notes))
+        # senza giornate non serve nemmeno
+        data["giornate"] = []
+        plan, rep = self.plan(data)
+        self.assertEqual(len(plan["squadre"]), 2)
+
+    def test_non_assegnata_per_nome_assente_o_vuoto_e_riuso(self):
+        data = copy.deepcopy(V1)
+        data["giornate"] = [{"id": "ga", "data": "2026-01-01", "consegneIds": []},                 # chiave assente
+                            {"id": "gb", "data": "2026-01-02", "squadra": "   ", "consegneIds": []},
+                            {"id": "gc", "data": "2026-01-03", "squadra": None, "consegneIds": []}]
+        plan, rep = self.plan(data)
+        self.assertEqual(len([s for s in plan["squadre"] if s["nome"] == "Non assegnata"]), 1)  # una sola, creata una volta
+        self.assertEqual(len({g["squadra_id"] for g in plan["giornate"]}), 1)
+        self.assertTrue(any("3 giornate senza squadra" in n for n in rep.notes))
+        # se esiste già una squadra con quel nome (anche con maiuscole diverse) si riusa
+        data["squadre"].append({"id": "sq9", "nome": "NON ASSEGNATA", "colorIdx": 0})
+        plan, rep = self.plan(data)
+        self.assertEqual(len(plan["squadre"]), 3)
+        self.assertEqual({g["squadra_id"] for g in plan["giornate"]}, {"sq9"})
+        # nome personalizzato
+        rep2 = migrate.Report()
+        plan = migrate.build_plan("v1", copy.deepcopy(V1), "N", True, rep2, non_assegnata="Da definire")
+        self.assertEqual(plan["squadre"][-1]["nome"], "Da definire")
+
+    def test_nomi_squadra_ambigui_o_mancanti(self):
+        data = copy.deepcopy(V1)
+        data["squadre"].append({"id": "sq3", "nome": "Squadra A", "colorIdx": 1})               # nome doppio
+        data["giornate"] = [{"id": "g1", "data": "2026-01-01", "squadra": "Squadra A", "consegneIds": []},
+                            {"id": "g2", "data": "2026-01-02", "squadra": " squadra b ", "consegneIds": []},
+                            {"id": "g3", "data": "2026-01-03", "squadra": "Squadra Fantasma", "consegneIds": []}]
+        plan, rep = self.plan(data)
+        ids = {g["id"]: g["squadra_id"] for g in plan["giornate"]}
+        self.assertEqual(ids["g1"], "sq1")                                                      # la prima
+        self.assertEqual(ids["g2"], "sq2")                                                      # senza maiuscole/spazi
+        creata = [s for s in plan["squadre"] if s["nome"] == "Squadra Fantasma"]
+        self.assertEqual(len(creata), 1)                                                        # mancante: creata
+        self.assertEqual(ids["g3"], creata[0]["id"])
+        text = "\n".join(rep.warnings)
+        self.assertIn("stesso nome", text)
+        self.assertIn("maiuscole o spazi", text)
+        self.assertIn("creata", text)
+        self.assertFalse(any(s["nome"] == "Non assegnata" for s in plan["squadre"]))
+        migrate.validate_plan(plan, rep)
+        self.assertEqual(rep.errors, [])
+
+    def test_squadra_non_testo(self):
+        data = copy.deepcopy(V1)
+        data["giornate"][0]["squadra"] = 5
+        plan, rep = self.plan(data)
+        self.assertTrue(any("non è un testo" in e for e in rep.errors))
+
+    def test_v2_giornata_senza_squadra_id_o_con_vecchio_campo(self):
+        data = {c: [] for c in migrate.COLLECTIONS_V2}
+        data["negozi"] = [{"id": "n1", "nome": "N"}]
+        data["giornate"] = [{"id": "g1", "negozio_id": "n1", "data": "2026-01-01", "consegneIds": []},
+                            {"id": "g2", "negozio_id": "n1", "data": "2026-01-02", "squadra": "A", "consegneIds": []}]
+        plan, rep = self.plan(data, kind="v2")
+        migrate.validate_plan(plan, rep)
+        text = "\n".join(rep.errors)
+        self.assertIn("squadra_id", text)
+        self.assertIn("vecchio campo 'squadra'", text)
 
     def test_validazione_riporta_tutti_i_problemi(self):
         data = copy.deepcopy(V1)
@@ -267,16 +341,26 @@ class Base(unittest.TestCase):
         for coll in migrate.COLLECTIONS_V1:
             exp = V1[coll]
             got = {r["id"]: r for r in data[coll]}
-            self.assertEqual([r["id"] for r in data[coll]], [r["id"] for r in exp], coll)   # ordine di inserimento
+            self.assertEqual([r["id"] for r in data[coll]][:len(exp)], [r["id"] for r in exp], coll)   # ordine di inserimento
             for e in exp:
                 g = got[e["id"]]
                 for k, v in e.items():
+                    if coll == "giornate" and k == "squadra":
+                        continue                                           # diventa squadra_id (controllato sotto)
                     self.assertEqual(g.get(k), v, f"{coll} {e['id']} campo {k}")
+                if coll == "giornate":
+                    self.assertNotIn("squadra", g)
                 self.assertEqual(g["negozio_id"], nid)
                 if coll != "giornate" or "versione" in g:
                     self.assertEqual(g.get("versione"), 1)
-        g1 = {r["id"]: r for r in data["giornate"]}["g1"]
-        self.assertEqual(g1["consegneIds"], ["c2", "c1"])                  # ordine delle consegne conservato
+        g = {r["id"]: r for r in data["giornate"]}
+        self.assertEqual(g["g1"]["consegneIds"], ["c2", "c1"])             # ordine delle consegne conservato
+        # la squadra è un riferimento: g1 → sq1 (per nome); g2 non ne aveva → "Non assegnata", creata apposta
+        sq = {s["nome"]: s for s in data["squadre"]}
+        self.assertEqual(sorted(sq), ["Non assegnata", "Squadra A", "Squadra B"])
+        self.assertEqual(g["g1"]["squadra_id"], "sq1")
+        self.assertEqual(g["g2"]["squadra_id"], sq["Non assegnata"]["id"])
+        self.assertEqual(sq["Non assegnata"]["negozio_id"], nid)
 
 
 class TestMigrazioneV1(Base):
@@ -311,6 +395,23 @@ class TestMigrazioneV1(Base):
         import server as srv
         srv.ensure_superadmin()                                            # il server non ne crea un secondo
         self.assertEqual(len(st.list_records("utenti")), 1)
+
+    def test_nessuna_squadra_non_assegnata_se_non_serve(self):
+        data = copy.deepcopy(V1)
+        data["giornate"][1]["squadra"] = "Squadra B"
+        write_v1_dir(self.src, data)
+        code, out = self.migrate("--execute")
+        self.assertEqual(code, 0, out)
+        self.assertIn("nessuna squadra 'non assegnata' necessaria", out)
+        d = self.read_dest()
+        self.assertEqual(sorted(s["nome"] for s in d["squadre"]), ["Squadra A", "Squadra B"])
+        self.assertEqual({g["id"]: g["squadra_id"] for g in d["giornate"]}, {"g1": "sq1", "g2": "sq2"})
+
+    def test_nome_personalizzato_della_squadra_non_assegnata(self):
+        code, out = self.migrate("--execute", MIGRATE_SQUADRA_NON_ASSEGNATA="Da definire")
+        self.assertEqual(code, 0, out)
+        self.assertIn("Da definire", out)
+        self.assertEqual(sorted(s["nome"] for s in self.read_dest()["squadre"]), ["Da definire", "Squadra A", "Squadra B"])
 
     def test_argomenti_al_posto_delle_variabili(self):
         code, out = self.migrate("run", "--execute", "--negozio-nome", "Sede di prova")
