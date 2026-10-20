@@ -165,6 +165,17 @@ class Base(unittest.TestCase):
         self.assertEqual(code, 201, d)
         return d["consegne"][-1]
 
+    def mk_squadra(self, token, nome="Squadra"):
+        code, d = self.call("POST", "/api/squadre", {"nome": nome}, token)
+        self.assertEqual(code, 201, d)
+        return [s for s in d["squadre"] if s["nome"] == nome][0]["id"]
+
+    def mk_giornata(self, token, data="2026-05-01", squadra_id=None):
+        sid = squadra_id or self.mk_squadra(token, f"Sq {data}")
+        code, d = self.call("POST", "/api/giornate", {"data": data, "squadra_id": sid}, token)
+        self.assertEqual(code, 201, d)
+        return [g for g in d["giornate"] if g["data"] == data and g["squadra_id"] == sid][-1]["id"]
+
 
 class TestAuth(Base):
 
@@ -504,8 +515,7 @@ class TestConsegne(Base):
     def test_elimina_toglie_dalle_giornate(self):
         w = self.world()
         c = self.mk_consegna(w["a1"])
-        _, d = self.call("POST", "/api/giornate", {"data": "2026-05-01"}, w["a1"])
-        gid = d["giornate"][0]["id"]
+        gid = self.mk_giornata(w["a1"])
         self.call("POST", f"/api/giornate/{gid}/assegna", {"consegna_ids": [c["id"]]}, w["a1"])
         code, d = self.call("DELETE", f"/api/consegne/{c['id']}", token=w["a1"])
         self.assertEqual(code, 200)
@@ -520,8 +530,8 @@ class TestGiornate(Base):
         self.w = w = self.world()
         self.c1 = self.mk_consegna(w["a1"], cognome="Uno")
         self.c2 = self.mk_consegna(w["a1"], cognome="Due")
-        _, d = self.call("POST", "/api/giornate", {"data": "2026-05-01", "squadra": "Sq"}, w["a1"])
-        self.gid = d["giornate"][0]["id"]
+        self.sid = self.mk_squadra(w["a1"], "Sq")
+        self.gid = self.mk_giornata(w["a1"], "2026-05-01", self.sid)
 
     def assegna(self, *cids, token=None):
         return self.call("POST", f"/api/giornate/{self.gid}/assegna",
@@ -587,11 +597,19 @@ class TestGiornate(Base):
     def test_crea_validazioni(self):
         self.assertEqual(self.call("POST", "/api/giornate", {}, self.w["a1"])[0], 400)
         self.assertEqual(self.call("POST", "/api/giornate", {"data": "domani"}, self.w["a1"])[0], 400)
-        self.assertEqual(self.call("POST", "/api/giornate", {"data": "2026-05-01", "squadra": 3},
-                                   self.w["a1"])[0], 400)
+        a = self.w["a1"]
+        ok = {"data": "2026-05-01", "squadra_id": self.sid}
+        self.assertEqual(self.call("POST", "/api/giornate", {"data": "2026-05-01"}, a)[0], 400)           # squadra obbligatoria
+        self.assertEqual(self.call("POST", "/api/giornate", {**ok, "squadra_id": ""}, a)[0], 400)
+        self.assertEqual(self.call("POST", "/api/giornate", {**ok, "squadra_id": 3}, a)[0], 400)
+        self.assertEqual(self.call("POST", "/api/giornate", {**ok, "squadra_id": "inesistente"}, a)[0], 400)
+        altra = self.mk_squadra(self.w["b1"], "DiB")                                                      # di un altro negozio
+        self.assertEqual(self.call("POST", "/api/giornate", {**ok, "squadra_id": altra}, a)[0], 403)
+        self.assertEqual(len(st.list_records("giornate")), 1)
         # stessa data con squadre diverse: ammessa
-        code, d = self.call("POST", "/api/giornate", {"data": "2026-05-01", "squadra": "Altra"}, self.w["a1"])
+        code, d = self.call("POST", "/api/giornate", {**ok, "squadra_id": self.mk_squadra(a, "Altra")}, a)
         self.assertEqual((code, len(d["giornate"])), (201, 2))
+        self.assertEqual(d["giornate"][0]["squadra_id"], self.sid)
 
 
 class TestSquadre(Base):
@@ -609,35 +627,50 @@ class TestSquadre(Base):
         self.assertEqual(self.call("POST", "/api/squadre", {"nome": "Uno"}, b)[0], 201)   # altro negozio
         self.assertEqual(self.call("POST", "/api/squadre", {"nome": " "}, a)[0], 400)
 
-    def test_rinomina_aggiorna_le_giornate_e_conflitti(self):
+    def test_rinomina_non_tocca_le_giornate_e_conflitti(self):
         a = self.w["a1"]
-        _, d = self.call("POST", "/api/squadre", {"nome": "Uno"}, a)
-        sq = d["squadre"][0]
-        self.call("POST", "/api/giornate", {"data": "2026-05-01", "squadra": "Uno"}, a)
-        self.call("POST", "/api/giornate", {"data": "2026-05-02", "squadra": "Altra"}, a)
+        sid = self.mk_squadra(a, "Uno")
+        self.mk_giornata(a, "2026-05-01", sid)
+        sq = st.get_record("squadre", sid)
+        giornate_prima = st.list_records("giornate")
         self.assertEqual(self.call("PUT", f"/api/squadre/{sq['id']}", {"nome": "Nuova"}, a)[0], 400)  # versione
         code, d = self.call("PUT", f"/api/squadre/{sq['id']}", {"versione": 1, "nome": "Nuova", "colorIdx": 5}, a)
         self.assertEqual(code, 200, d)
         self.assertEqual((d["squadre"][0]["nome"], d["squadre"][0]["colorIdx"]), ("Nuova", 5))
-        self.assertEqual(sorted(g["squadra"] for g in d["giornate"]), ["Altra", "Nuova"])
-        # versione superata: 409 e le giornate non cambiano
+        self.assertEqual(d["giornate"][0]["squadra_id"], sid)                 # la giornata la referenzia per id
+        self.assertEqual(st.list_records("giornate"), giornate_prima)         # e non è stata riscritta
+        # versione superata: 409
         code, _ = self.call("PUT", f"/api/squadre/{sq['id']}", {"versione": 1, "nome": "Ancora"}, a)
         self.assertEqual(code, 409)
-        self.assertEqual(sorted(g["squadra"] for g in st.list_records("giornate")), ["Altra", "Nuova"])
+        self.assertEqual(st.get_record("squadre", sid)["nome"], "Nuova")
         self.assertEqual(self.call("PUT", f"/api/squadre/{sq['id']}", {"versione": 2, "colorIdx": 9}, a)[0], 400)
         self.assertEqual(self.call("PUT", f"/api/squadre/{sq['id']}", {"versione": 2, "nome": "x"},
                                    self.w["b1"])[0], 403)
 
-    def test_elimina_svuota_le_giornate(self):
+    def test_elimina_bloccata_se_ha_giornate(self):
         a = self.w["a1"]
-        _, d = self.call("POST", "/api/squadre", {"nome": "Uno"}, a)
-        sid = d["squadre"][0]["id"]
-        self.call("POST", "/api/giornate", {"data": "2026-05-01", "squadra": "Uno"}, a)
+        sid = self.mk_squadra(a, "Uno")
+        gid = self.mk_giornata(a, "2026-05-01", sid)
         self.assertEqual(self.call("DELETE", f"/api/squadre/{sid}", token=self.w["b1"])[0], 403)
         code, d = self.call("DELETE", f"/api/squadre/{sid}", token=a)
+        self.assertEqual(code, 409)
+        self.assertIn("giornate", d["error"])
+        self.assertIsNotNone(st.get_record("squadre", sid))
+        self.assertEqual(st.get_record("giornate", gid)["squadra_id"], sid)
+        # eliminate le giornate, la squadra si può eliminare
+        self.assertEqual(self.call("DELETE", f"/api/giornate/{gid}", token=a)[0], 200)
+        code, d = self.call("DELETE", f"/api/squadre/{sid}", token=a)
         self.assertEqual(code, 200)
-        self.assertEqual(d["squadre"], [])
-        self.assertEqual([g["squadra"] for g in d["giornate"]], [""])
+        self.assertEqual([s["id"] for s in d["squadre"] if s["id"] == sid], [])
+
+    def test_elimina_squadra_senza_giornate_tocca_solo_squadre(self):
+        a = self.w["a1"]
+        sid = self.mk_squadra(a, "Uno")
+        _, before = self.call("GET", "/api/stato", token=a)
+        self.assertEqual(self.call("DELETE", f"/api/squadre/{sid}", token=a)[0], 200)
+        _, after = self.call("GET", "/api/stato", token=a)
+        self.assertGreater(after["squadre"], before["squadre"])
+        self.assertEqual((after["giornate"], after["consegne"]), (before["giornate"], before["consegne"]))
 
 
 class TestStato(Base):

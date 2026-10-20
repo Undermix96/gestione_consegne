@@ -658,11 +658,16 @@ def h_create_giornata(ctx):
     data = need_text(b, "data", "data")
     if not DATA_RE.fullmatch(data):
         raise HttpError(400, "data non valida (atteso AAAA-MM-GG)")
-    squadra = b.get("squadra", "")
-    if not isinstance(squadra, str):
+    # la squadra è obbligatoria: deve esistere ed essere del negozio della sessione
+    sid = b.get("squadra_id")
+    if not isinstance(sid, str) or not sid:
+        raise HttpError(400, "squadra_id obbligatorio")
+    sq = storage.get_record("squadre", sid)
+    if sq is None:
         raise HttpError(400, "squadra non valida")
+    check_tenant(ctx, sq)
     storage.insert_record("giornate", {"id": new_id("g_"), "negozio_id": ctx.nid,
-                                       "data": data, "squadra": squadra})
+                                       "data": data, "squadra_id": sid})
     touch(ctx.nid, "giornate")
     ctx.dlog(f"Aggiunta giornata {data}")
     return 201, db_negozio(ctx)
@@ -759,20 +764,15 @@ def h_update_squadra(ctx, sid):
         changes["colorIdx"] = ci
     if not changes:
         raise HttpError(400, "Nessuna modifica indicata")
-    rinomina = "nome" in changes and changes["nome"] != cur["nome"]
-    if rinomina:
+    if "nome" in changes and changes["nome"] != cur["nome"]:
         nome_squadra_libero(ctx, changes["nome"], escludi_id=sid)
     if cur.get("versione") != ver:
         raise HttpError(409, "La squadra è stata modificata da un altro utente. Ricarica e riprova.")
-    if rinomina:
-        # prima le giornate, poi la squadra: un'interruzione si risolve ripetendo l'operazione
-        for g in storage.list_records("giornate", {"negozio_id": ctx.nid, "squadra": cur["nome"]}):
-            storage.update_record("giornate", g["id"], {"squadra": changes["nome"]})
     try:
         storage.update_record("squadre", sid, changes, expected_versione=ver)
     except ConflictError:
         raise HttpError(409, "La squadra è stata modificata da un altro utente. Ricarica e riprova.")
-    touch(ctx.nid, "squadre", "giornate")
+    touch(ctx.nid, "squadre")      # le giornate la referenziano per id: la rinomina non le tocca
     ctx.dlog(f"Aggiornata squadra '{cur['nome']}'")
     return 200, db_negozio(ctx)
 
@@ -780,11 +780,14 @@ def h_update_squadra(ctx, sid):
 def h_delete_squadra(ctx, sid):
     cur = rec_or_404("squadre", sid, "Squadra")
     check_tenant(ctx, cur)
-    # prima si svuota il riferimento nelle giornate, poi si elimina (ripetibile se interrotta)
-    for g in storage.list_records("giornate", {"negozio_id": ctx.nid, "squadra": cur["nome"]}):
-        storage.update_record("giornate", g["id"], {"squadra": ""})
-    storage.delete_record("squadre", sid)
-    touch(ctx.nid, "squadre", "giornate")
+    msg = "La squadra ha giornate assegnate: eliminale prima"
+    if storage.list_records("giornate", {"negozio_id": ctx.nid, "squadra_id": sid}):
+        raise HttpError(409, msg)
+    try:
+        storage.delete_record("squadre", sid)
+    except IntegrityError:     # una giornata è stata creata nel frattempo: il vincolo dello storage vince
+        raise HttpError(409, msg)
+    touch(ctx.nid, "squadre")
     ctx.dlog(f"Eliminata squadra '{cur['nome']}'")
     return 200, db_negozio(ctx)
 
