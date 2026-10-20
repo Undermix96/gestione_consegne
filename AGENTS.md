@@ -4,7 +4,7 @@ Documento di contesto per agenti AI. Descrive stato attuale del progetto, archit
 
 ---
 
-> **Stato del branch `v2-docker`:** questo documento descrive la **V2** (obiettivo del branch). **`storage.py` è già V2** (fase 1) e lo è anche **`server.py`** (fase 2, collaudato con `tests/test_server.py` su json, PostgreSQL e MySQL); il frontend è ancora V1 finché la fase 3 in [§11](#11-stato-di-implementazione-v2) non è completata (quindi, per ora, il frontend non funziona con il server V2). **🚧 V2** indica una funzionalità della V2 non ancora presente su `main`; dove è già implementata e collaudata su questo branch il titolo lo dice (es. "implementata", ✅). Il design V2 proviene dal branch `dev` (versione Windows, mai andata in produzione) ed è stato adattato a Docker e allo storage a più backend.
+> **Stato del branch `v2-docker`:** questo documento descrive la **V2** (obiettivo del branch). **`storage.py` è già V2** (fase 1) e lo è anche **`server.py`** (fase 2, collaudato con `tests/test_server.py` su json, PostgreSQL e MySQL); anche il **frontend** (fase 3, collaudato con controlli statici in Node e con un giro completo nel browser contro il server V2). Restano `migrate.py` (fase 4) e il test integrato (fase 5), vedi [§11](#11-stato-di-implementazione-v2). **🚧 V2** indica una funzionalità della V2 non ancora presente su `main`; dove è già implementata e collaudata su questo branch il titolo lo dice (es. "implementata", ✅). Il design V2 proviene dal branch `dev` (versione Windows, mai andata in produzione) ed è stato adattato a Docker e allo storage a più backend.
 
 ## Indice
 
@@ -116,6 +116,7 @@ gestione_consegne/
 ├── migrate.py              # 🚧 V2: migrazione V1→V2 e tra backend (vedi §11, fase 4)
 ├── tests/                  # 🚧 V2: suite di contratto di storage.py (non inclusa nell'immagine)
 │   ├── test_storage_contract.py
+│   ├── js/run.mjs          # 🚧 V2: controlli statici del frontend e test di sha256.js (Node, solo nei test) ✅
 │   ├── test_server.py      # 🚧 V2: test del server (auth, permessi, multi-negozio, REST) ✅
 │   └── run_all.sh          # esegue la suite su ogni backend (TEST_BACKENDS)
 ├── compose.test.yaml       # 🚧 V2: database temporanei per i test (separato dalla produzione)
@@ -141,6 +142,7 @@ gestione_consegne/
     ├── modal-select.js     # Modal selezione (V2: REST)
     ├── squadre.js          # CRUD squadre (V2: REST)
     ├── stampa.js           # Stampa PDF
+    ├── clientid.js         # 🚧 V2: X-Client-ID di questa scheda (modulo senza dipendenze) ✅
     ├── sha256.js           # 🚧 V2: SHA-256 puro JS (no crypto.subtle)
     ├── auth.js             # 🚧 V2: login, logout, cambio password, token in sessionStorage
     ├── permessi.js         # 🚧 V2: lista permessi, dipendenze, hasPermesso()
@@ -704,14 +706,14 @@ export const API = `http://${window.location.hostname}:8742/api`;
 ```
 ⚠️ **Incongruenza nota su `main`:** questa documentazione indicava 8080 come "già aggiornata", ma nel codice di `store.js` c'è ancora `8742`. Funziona solo se la porta pubblicata (`APP_PORT`) è 8742.
 
-**Decisione V2 🚧 (da applicare in fase 3):** percorso relativo `export const API = '/api';` — stessa origine del server, nessuna porta hardcoded, valido con qualsiasi `APP_PORT` o reverse proxy.
+**Decisione V2 (applicata in fase 3 ✅):** percorso relativo `export const API = '/api';` — stessa origine del server, nessuna porta hardcoded, valido con qualsiasi `APP_PORT` o reverse proxy.
 
-### Identificatore client (`api.js`)
+### Identificatore client (`clientid.js`)
 ```javascript
-// api.js — generato una volta per sessione browser, salvato in sessionStorage
+// clientid.js — generato una volta per sessione browser, salvato in sessionStorage
 const CLIENT_ID = generateClientId(); // via crypto.getRandomValues(), NON crypto.randomUUID()
 ```
-⚠️ **Non usare `crypto.randomUUID()`**: richiede un secure context (HTTPS o `localhost`) ed è **indisponibile** quando l'app è servita via HTTP semplice su IP LAN — lo scenario normale di questo progetto. `crypto.getRandomValues()` non ha questa limitazione ed è usato per generare un ID esadecimale a 16 byte. In V1 è inviato come header `X-Client-ID` su `fetchData`, `postData`, `pingServer` (non su `remoteLog`). In V2 🚧 va inviato su **ogni** richiesta REST (nel wrapper `_fetch` di `api.js`).
+⚠️ **Non usare `crypto.randomUUID()`**: richiede un secure context (HTTPS o `localhost`) ed è **indisponibile** quando l'app è servita via HTTP semplice su IP LAN — lo scenario normale di questo progetto. `crypto.getRandomValues()` non ha questa limitazione ed è usato per generare un ID esadecimale a 16 byte. In V1 è inviato come header `X-Client-ID` su `fetchData`, `postData`, `pingServer` (non su `remoteLog`). In V2 è inviato su **ogni** richiesta (`clientHeaders()` di `clientid.js`, usato dal wrapper `_fetch` di `api.js` e dalle chiamate di `auth.js`).
 
 ### Stato globale (`store.js`)
 ```javascript
@@ -770,9 +772,10 @@ main.js
   ├── store.js          (no deps)
   ├── sha256.js         (no deps)
   ├── permessi.js → store
-  ├── auth.js → sha256, store
-  ├── api.js → store, auth
-  ├── sync.js → api, store
+  ├── clientid.js       (no deps)
+  ├── auth.js → sha256, store, clientid
+  ├── api.js → store, auth, clientid
+  ├── sync.js → api, store, permessi, utils
   ├── utils.js → store
   ├── theme.js          (no deps)
   ├── render.js → sync, utils, store, dragdrop, permessi
@@ -987,7 +990,7 @@ Questa sezione traccia l'avanzamento della V2 sul branch `v2-docker` (partito da
 | 0 | Documentazione (`AGENTS.md`, `README.md`) | ✅ completata, in revisione |
 | 1 | `storage.py`: schema V2 e API per singolo record su json/mysql/postgres, con suite di test condivisa | ✅ completata — API per record, backend json/PostgreSQL/MySQL, marcatore e controllo dello schema, `compose.test.yaml`; collaudata in Docker (json, `postgres:16`, `mysql:8.4`) |
 | 2 | `server.py`: Challenge-Response, sessioni, endpoint REST, permessi, filtro `negozio_id`, `/api/stato`, creazione superadmin | ✅ completata — vedi "Scelte implementative della fase 2" sotto; 52 test del server su json, `postgres:16`, `mysql:8.4` |
-| 3 | Frontend V2 (vedi metodo sotto) | ⬜ |
+| 3 | Frontend V2 (vedi metodo sotto) | ✅ completata — vedi "Scelte implementative della fase 3"; controlli statici e `sha256.js` in Node (`tests/js/run.mjs`), giro completo nel browser contro il server V2 (a mano, non automatizzato) |
 | 4 | `migrate.py` | ⬜ |
 | 5 | Test integrato: migrazione → primo login superadmin → negozio → tipo account → utente → login → operatività, su tutti e 3 i backend | ⬜ |
 | 6 | `squadra_id` al posto del nome squadra nelle giornate (server, `render.js`, `giornate.js`, `stampa.js`, `utils.js`, `modal-consegna.js`, schema, migrazione) | ⬜ rimandata |
@@ -1010,6 +1013,16 @@ Dove il design di §5 lasciava margine, o dove `dev` è stato migliorato:
 - **Rimossi:** `GET/POST /api/data`, `POST /api/log`, `/api/clients`, CORS (`/api` è sulla stessa origine).
 - **Avvio:** `init_storage_v2()` + creazione del superadmin; `SchemaError` → log leggibile e uscita con codice 2; altro `StorageError` → codice 1.
 - **Forma delle risposte** (da rispettare nel frontend, fase 3): `GET /api/negozi` → `{"negozi": [...]}`, `GET /api/tipi-account` → `{"tipi_account": [...]}`, `GET /api/utenti` → `{"utenti": [...]}` (senza `password_hash`, senza il superadmin), `POST /api/negozi` → `{"ok": true, "negozio": {...}}`, `POST /api/tipi-account` → `{"ok": true, "tipo": {...}}`, `POST /api/utenti` → `{"ok": true, "id": "..."}`, le altre scritture amministrative `{"ok": true}`; le scritture operative rispondono con il db del negozio (§5).
+
+### Scelte implementative della fase 3 (frontend)
+- **Base:** i file di `dev` (`git show origin/dev:<file>`), uniti a tre vie con gli interventi di `main` (`X-Client-ID`, sidebar decrescente, nuovi tipi di installazione); un solo conflitto reale, in `api.js`. Nuovo `clientid.js` (senza dipendenze) perché `api.js` e `auth.js` inviino `X-Client-ID` su **ogni** richiesta senza un ciclo `api → auth → api`.
+- **Caricamento e polling per permessi:** si scaricano solo le categorie (`consegne`, `giornate`, `squadre`) per cui l'utente ha il permesso di lettura (il server risponderebbe 403). `/api/stato` si legge **prima** dei dati: se qualcosa cambia nel frattempo il polling successivo lo riscarica. Le schede delle viste senza permesso di lettura sono nascoste.
+- **`versione` nei `PUT`** di consegne (dal record locale, già in `dev`) e di squadre (rinomina e colore).
+- **Conflitti (409):** `reportError()` in `sync.js` mostra il messaggio del server e ricarica i dati; il form della consegna si chiude così non si sovrascrivono alla cieca le modifiche dell'altro utente (riaprendo si vede la versione aggiornata). Altri errori: toast `Errore: ...`.
+- **Sessione:** token in `sessionStorage`; il flag `must_change_password` è salvato anch'esso, così dopo un ricaricamento riappare l'overlay di cambio password. Un 401 su qualunque chiamata (sessione scaduta o invalidata, server riavviato) pulisce la sessione e **ricarica la pagina** (fermando ping e polling), con il messaggio "Sessione terminata: accedi di nuovo." Il ping gira anche per il superadmin.
+- **Giornate:** l'interfaccia blocca l'eliminazione di una giornata con consegne assegnate, come il server.
+- **Sicurezza (XSS):** ogni dato proveniente dal server inserito in `innerHTML`, nella finestra di stampa o negli attributi passa da `escHtml()` (che ora esegue l'escape anche di `'` e accetta qualsiasi valore); `fmtDate()` mostra come testo un valore che non è una data `AAAA-MM-GG`. I gestori inline dei pannelli (`modal-utenti.js`, `modal-admin.js`) ricevono **solo gli id** e ricavano nomi e username dalla lista in memoria, mai da stringhe inserite nell'attributo. Motivo: con più utenti e il token in `sessionStorage`, un nome con codice HTML inserito da un operatore sarebbe eseguito nel browser di un amministratore (XSS memorizzato).
+- **Test:** `docker compose -f compose.test.yaml run --rm jstests` (Node in `node:22-alpine`, mai nell'app): sintassi dei moduli, ogni nome importato esiste, nessuna dipendenza circolare, ogni funzione usata in `onclick`/`onchange`/... è esposta su `window`, ogni `getElementById` letterale trova un elemento, `sha256.js` identico a SHA-256 di riferimento (accenti, emoji, lunghezze di confine). Il controllo è stato verificato introducendo errori intenzionali. Non c'è una suite automatica nel browser: il giro completo (primo login, cambio password obbligatorio anche dopo un ricaricamento, creazione di negozi/tipi/utenti, operatività, conflitto 409, polling tra due utenti, sessione invalidata, server fermato e riavviato, stampa) è stato eseguito a mano nel browser integrato di Claude, con nomi contenenti HTML.
 
 ### Metodo e regole
 - **Non riscrivere a memoria il codice del branch `dev`:** si parte dai file di `dev` (`git show origin/dev:<file>`) e si adattano.

@@ -2,7 +2,7 @@
 
 Sistema completo per la gestione di consegne e installazioni, progettato per team di lavoro. Permette di pianificare le attività, assegnarle a squadre e monitorare lo stato delle consegne.
 
-> 🚧 **V2 in sviluppo (branch `v2-docker`):** login multi-utente, permessi per tipo di account e multi-negozio. Le sezioni marcate **🚧 V2** descrivono la versione in sviluppo e **non sono ancora disponibili** su `main`. Stato e fasi di avanzamento: `AGENTS.md`, §11. Al momento sono pronti lo storage (fase 1) e il server (fase 2); il frontend è ancora quello V1 (fase 3) e non funziona con il server V2.
+> 🚧 **V2 in sviluppo (branch `v2-docker`):** login multi-utente, permessi per tipo di account e multi-negozio. Le sezioni marcate **🚧 V2** descrivono la versione in sviluppo e **non sono ancora disponibili** su `main`. Stato e fasi di avanzamento: `AGENTS.md`, §11. Al momento sono pronti lo storage (fase 1), il server (fase 2) e il frontend (fase 3); manca `migrate.py` (fase 4), quindi i dati V1 esistenti non si possono ancora portare nella V2.
 
 ## 📋 Funzionalità principali
 
@@ -30,7 +30,7 @@ Sistema completo per la gestione di consegne e installazioni, progettato per tea
 - **Login multi-utente** con Challenge-Response SHA-256 (compatibile con HTTP su rete locale)
 - **Tipi account configurabili** con permessi granulari, definiti dal superadmin
 - **Multi-negozio**: ogni utente appartiene a un negozio e vede solo i dati del proprio negozio
-- **Sessioni con scadenza** dopo 2 ore di inattività
+- **Sessioni con scadenza** dopo 2 ore di inattività (ping e aggiornamento automatico in background non la prolungano: conta solo l'attività dell'utente)
 - **Protezione dalle modifiche concorrenti**: se due utenti modificano la stessa consegna, il secondo riceve un avviso e deve ricaricare
 - **Log degli accessi e delle operazioni** con utente e IP
 
@@ -175,7 +175,7 @@ gestione_consegne/
 ├── Dockerfile              # Immagine Docker
 ├── compose.yaml            # Orchestrazione container e profili DB
 ├── compose.test.yaml       # 🚧 V2: database temporanei per i test dello storage (separato dalla produzione)
-├── tests/                  # 🚧 V2: suite di contratto di storage.py e test di server.py (non inclusi nell'immagine)
+├── tests/                  # 🚧 V2: suite di contratto di storage.py e test di server.py (non inclusi nell'immagine); controlli statici del frontend (tests/js)
 ├── index.html              # Shell HTML: struttura, modali, nav
 │
 ├── css/
@@ -197,6 +197,7 @@ gestione_consegne/
     ├── modal-select.js     # Modal selezione consegne da aggiungere a giornata
     ├── squadre.js          # CRUD squadre: add, rename, color, delete
     ├── stampa.js           # Stampa PDF giornata
+    ├── clientid.js         # 🚧 V2: identificatore X-Client-ID della scheda
     ├── sha256.js           # 🚧 V2: SHA-256 puro JS per il Challenge-Response
     ├── auth.js             # 🚧 V2: login, logout, cambio password, token di sessione
     ├── permessi.js         # 🚧 V2: lista permessi, dipendenze, hasPermesso()
@@ -298,7 +299,7 @@ Categorie: `[AUTH]`, `[UTENTI]`, `[DATI]`, `[NEGOZI]`, `[TIPI_ACCOUNT]`. In Dock
 2. Filtra sempre per `negozio_id` e registra l'operazione nel log con categoria `[DATI]`
 3. Le modifiche allo schema vanno fatte in `storage.py` su **tutti e tre** i backend e riportate in `migrate.py`
 4. Prima di iniziare una fase di sviluppo V2 leggi `AGENTS.md` §11 (stato, metodo, punti aperti)
-5. Test dello storage e del server (in Docker, con database temporanei separati dalla produzione): `docker compose -f compose.test.yaml up --build --exit-code-from tests`, poi `docker compose -f compose.test.yaml down`. Dettagli in `AGENTS.md` §6
+5. Test dello storage e del server (in Docker, con database temporanei separati dalla produzione): `docker compose -f compose.test.yaml up --build --exit-code-from tests`, poi `docker compose -f compose.test.yaml down`. Controlli statici del frontend e test di `sha256.js` (Node nell'immagine `node:22-alpine`, solo per i test): `docker compose -f compose.test.yaml run --rm jstests`. Dettagli in `AGENTS.md` §6 e §11
 
 ### Build e push dell'immagine
 ```bash
