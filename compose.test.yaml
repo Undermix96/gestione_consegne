@@ -24,6 +24,9 @@ services:
       POSTGRES_PASSWORD: test
     tmpfs:
       - /var/lib/postgresql/data
+    volumes:
+      # secondo database (sorgente V1 dei test di integrazione), creato solo all'avvio del container temporaneo
+      - ./tests/db-init/postgres.sql:/docker-entrypoint-initdb.d/10-sorgente.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U test -d gestione_consegne_test"]
       interval: 2s
@@ -40,6 +43,8 @@ services:
       MYSQL_PASSWORD: test
     tmpfs:
       - /var/lib/mysql
+    volumes:
+      - ./tests/db-init/mysql.sql:/docker-entrypoint-initdb.d/10-sorgente.sql:ro
     healthcheck:
       # via TCP: durante l'inizializzazione il server temporaneo ascolta solo sul socket
       test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -utest -ptest --silent"]
@@ -58,6 +63,7 @@ services:
     environment:
       TEST_BACKENDS: "${TEST_BACKENDS:-json postgres mysql}"
       TEST_VERBOSE: "${TEST_VERBOSE:-0}"
+      TEST_INTEGRATION: "${TEST_INTEGRATION:-1}"       # 0 = salta i test di integrazione (lenti)
       PYTHONDONTWRITEBYTECODE: "1"
       DB_NAME: gestione_consegne_test
       DB_USER: test
