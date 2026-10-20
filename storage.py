@@ -619,8 +619,8 @@ SCHEMA_VERSION = 2            # marcatore `schema_version` nei metadati (meta.js
 #   reserved  : campi gestiti solo da operazioni dedicate (non modificabili con update_record)
 _COLL = {
     "consegne":     dict(versioned=True, tenant=True, defaults={"stato": "in_attesa"}),
-    "giornate":     dict(versioned=True, tenant=True, required=("data",),
-                         reserved=("consegneIds",)),
+    "giornate":     dict(versioned=True, tenant=True, required=("data", "squadra_id"),
+                         reserved=("consegneIds",), fks={"squadra_id": "squadre"}),
     "squadre":      dict(versioned=True, tenant=True, required=("nome",),
                          defaults={"colorIdx": 0}),
     "negozi":       dict(required=("nome",)),
@@ -646,6 +646,7 @@ for _n, _s in _COLL.items():
 _REFERRERS = {
     "negozi":       [("consegne", "negozio_id"), ("giornate", "negozio_id"),
                      ("squadre", "negozio_id"), ("utenti", "negozio_id")],
+    "squadre":      [("giornate", "squadra_id")],
     "tipi_account": [("utenti", "tipo_account_id")],
 }
 
@@ -664,7 +665,7 @@ _COLS = {
                  ("fasciaOraria", "fascia_oraria", "text"),
                  ("dataPrenotazione", "data_prenotaz", "text"), ("articoli", "articoli", "json")],
     "giornate": [("negozio_id", "negozio_id", "text"), ("data", "data", "text"),
-                 ("squadra", "squadra", "text")],
+                 ("squadra_id", "squadra_id", "text")],
     "squadre":  [("negozio_id", "negozio_id", "text"), ("nome", "nome", "text"),
                  ("colorIdx", "color_idx", "int")],
     "negozi":   [("nome", "nome", "text"), ("creato_il", "creato_il", "text")],
@@ -680,7 +681,7 @@ _PY_TYPES = {"text": str, "int": int, "bool": bool, "json": list}
 _FIELD_TYPES = {c: {f: _PY_TYPES[t] for f, _, t in cols} for c, cols in _COLS.items()}
 # Lunghezze massime (le colonne SQL corrispondenti sono VARCHAR(n): servono per indici/unicità).
 # Validate dallo storage per TUTTI i backend, così json e SQL accettano gli stessi valori.
-_MAXLEN = {"id": 36, "negozio_id": 36, "tipo_account_id": 36, "creato_da": 36,
+_MAXLEN = {"id": 36, "negozio_id": 36, "tipo_account_id": 36, "squadra_id": 36, "creato_da": 36,
            "username": 150, "password_hash": 64, "tipi_account.nome": 255}
 
 def _has_nul(v):
@@ -834,6 +835,14 @@ class _JsonV2:
         if meta.get("migrazione_in_corso") and not ignore_migration:
             raise SchemaError("Migrazione dei dati in corso o interrotta (flag 'migrazione_in_corso'): "
                               "completarla o annullarla con migrate.py. Nessun file è stato modificato.")
+        if version == SCHEMA_VERSION:
+            old = [g.get("id") for g in self._read_file(self._path("giornate"), [], list)
+                   if "squadra" in g or not g.get("squadra_id")]
+            if old:
+                raise SchemaError(
+                    f"Le giornate {old[:5]} non hanno 'squadra_id' (archivio V2 di un'edizione precedente, "
+                    f"in cui la squadra era un nome). Usare una cartella dati nuova o migrare con migrate.py. "
+                    f"Nessun file è stato modificato.")
         os.makedirs(self._dir(), exist_ok=True)
         os.makedirs(os.path.join(self._dir(), "backup"), exist_ok=True)
         for name in _COLL:
@@ -933,6 +942,10 @@ class _JsonV2:
                 continue
             if not any(r.get("id") == val for r in self._read(target)):
                 raise IntegrityError(f"{name}.{field}: {target} '{val}' inesistente")
+        if name == "giornate" and rec.get("squadra_id") is not None and (only is None or "squadra_id" in only):
+            sq = next(r for r in self._read("squadre") if r.get("id") == rec["squadra_id"])
+            if sq.get("negozio_id") != rec.get("negozio_id"):
+                raise ValueError(f"squadra '{rec['squadra_id']}' appartiene a un altro negozio")
 
     def _check_unique(self, name, rows, rec, exclude_id=None):
         spec = _spec(name)
@@ -1127,7 +1140,7 @@ class _SqlV2:
     TABLE_OPTS = ""          # opzioni di tabella (charset/collation per MySQL)
     FOR_UPDATE = " FOR UPDATE"
     FOR_SHARE = " FOR SHARE"
-    _TABLE_ORDER = ["negozi", "tipi_account", "utenti", "consegne", "giornate", "squadre"]
+    _TABLE_ORDER = ["negozi", "tipi_account", "utenti", "consegne", "squadre", "giornate"]
 
     SCHEMA_EXPR = None       # espressione SQL dello schema corrente (dialetto)
     _ALL_TABLES = ["negozi", "tipi_account", "utenti", "consegne", "giornate", "squadre",
@@ -1399,6 +1412,16 @@ class _SqlV2:
             if found[cid] != negozio_id:
                 raise ValueError(f"consegna '{cid}' appartiene a un altro negozio")
 
+    def _check_squadra(self, cur, negozio_id, squadra_id):
+        if squadra_id is None:
+            return
+        cur.execute(f"SELECT negozio_id FROM squadre WHERE id = %s{self.FOR_SHARE}", (squadra_id,))
+        row = cur.fetchone()
+        if row is None:
+            raise IntegrityError(f"giornate.squadra_id: squadre '{squadra_id}' inesistente")
+        if row[0] != negozio_id:
+            raise ValueError(f"squadra '{squadra_id}' appartiene a un altro negozio")
+
     # ── lettura ────────────────────────────────────────────────────────────
     def list(self, name, filters):
         t = self.T[name]
@@ -1447,6 +1470,7 @@ class _SqlV2:
         def fn(cur):
             for rec in recs:
                 if name == "giornate":
+                    self._check_squadra(cur, rec["negozio_id"], rec.get("squadra_id"))
                     self._check_members(cur, rec["negozio_id"], rec["consegneIds"])
                 vals = self._row_values(t, rec)
                 cols = list(vals)
@@ -1474,6 +1498,8 @@ class _SqlV2:
                 raise ConflictError(f"{name} '{rid}': versione attesa {expected_versione}, "
                                     f"salvata {current.get('versione')}")
             new = _apply_changes(name, current, changes)
+            if name == "giornate" and "squadra_id" in changes:
+                self._check_squadra(cur, new["negozio_id"], new.get("squadra_id"))
             vals = self._row_values(t, new)
             vals.pop("id")
             cur.execute(f"UPDATE {name} SET {', '.join(c + ' = %s' for c in vals)} WHERE id = %s",

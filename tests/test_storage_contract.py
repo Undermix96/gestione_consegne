@@ -56,9 +56,16 @@ def squadra(sid="sq1", nid="n1", **over):
     return s
 
 def giornata(gid="g1", nid="n1", **over):
-    g = {"id": gid, "negozio_id": nid, "data": "2026-03-25", "squadra": "Squadra A"}
+    g = {"id": gid, "negozio_id": nid, "data": "2026-03-25", "squadra_id": f"sqg_{nid}"}
     g.update(over)
     return g
+
+def ins_g(rec):
+    """Inserisce una giornata creando prima (se serve) la sua squadra, obbligatoria."""
+    sid = rec.get("squadra_id")
+    if sid and st.get_record("squadre", sid) is None and st.get_record("negozi", rec["negozio_id"]) is not None:
+        st.insert_record("squadre", {"id": sid, "negozio_id": rec["negozio_id"], "nome": f"Squadra {sid}"})
+    return st.insert_record("giornate", rec)
 
 def utente(uid="u1", username="mario", nid="n1", tid=None, **over):
     u = {"id": uid, "username": username, "password_hash": "a" * 64,
@@ -112,7 +119,7 @@ class StorageContract(unittest.TestCase):
     def test_roundtrip_giornata_con_consegne(self):
         st.insert_record("consegne", consegna("c1"))
         st.insert_record("consegne", consegna("c2"))
-        out = st.insert_record("giornate", giornata(consegneIds=["c2", "c1"],
+        out = ins_g(giornata(consegneIds=["c2", "c1"],
                                                     consegneCompletate={"c1": True}))
         self.assertEqual(out["consegneIds"], ["c2", "c1"])
         self.assertNotIn("consegneCompletate", out)
@@ -244,7 +251,7 @@ class StorageContract(unittest.TestCase):
         for bad in ({"id": "x"}, {"versione": 5}, {"negozio_id": "n2"}):
             with self.assertRaises(ValueError):
                 st.update_record("consegne", "c1", bad)
-        st.insert_record("giornate", giornata())
+        ins_g(giornata())
         with self.assertRaises(ValueError):
             st.update_record("giornate", "g1", {"consegneIds": ["c1"]})
 
@@ -309,7 +316,46 @@ class StorageContract(unittest.TestCase):
         with self.assertRaises(st.IntegrityError):
             st.insert_record("squadre", squadra(nid="n_nope"))
         with self.assertRaises(st.IntegrityError):
-            st.insert_record("giornate", giornata(nid="n_nope"))
+            ins_g(giornata(nid="n_nope"))
+
+    def test_giornata_richiede_squadra_esistente_dello_stesso_negozio(self):
+        with self.assertRaises(ValueError):                                   # obbligatoria
+            st.insert_record("giornate", {"id": "g1", "negozio_id": "n1", "data": "2026-03-25"})
+        with self.assertRaises(st.IntegrityError):                            # inesistente
+            st.insert_record("giornate", giornata(squadra_id="sq_nope"))
+        st.insert_record("squadre", squadra("sq_n2", "n2"))
+        with self.assertRaises(ValueError):                                   # di un altro negozio
+            st.insert_record("giornate", giornata(squadra_id="sq_n2"))
+        self.assertEqual(st.list_records("giornate"), [])
+        ins_g(giornata())
+        with self.assertRaises(ValueError):                                   # non si può togliere
+            st.update_record("giornate", "g1", {"squadra_id": None})
+        with self.assertRaises(st.IntegrityError):                            # né puntare a una squadra inesistente
+            st.update_record("giornate", "g1", {"squadra_id": "sq_nope"})
+        with self.assertRaises(ValueError):                                   # né a una di un altro negozio
+            st.update_record("giornate", "g1", {"squadra_id": "sq_n2"})
+        st.insert_record("squadre", squadra("sq_b", "n1", nome="B"))
+        self.assertEqual(st.update_record("giornate", "g1", {"squadra_id": "sq_b"})["squadra_id"], "sq_b")
+        self.assertEqual(st.get_record("giornate", "g1")["squadra_id"], "sq_b")
+        self.assertEqual(st.get_record("giornate", "g1")["versione"], 2)
+
+    def test_squadra_con_giornate_non_eliminabile(self):
+        ins_g(giornata())
+        with self.assertRaises(st.IntegrityError):
+            st.delete_record("squadre", "sqg_n1")
+        self.assertIsNotNone(st.get_record("squadre", "sqg_n1"))
+        self.assertEqual(st.get_record("giornate", "g1")["squadra_id"], "sqg_n1")
+        st.insert_record("squadre", squadra("libera", "n1", nome="Libera"))
+        self.assertTrue(st.delete_record("squadre", "libera"))                # senza giornate si elimina
+        self.assertTrue(st.delete_record("giornate", "g1"))
+        self.assertTrue(st.delete_record("squadre", "sqg_n1"))                # dopo le giornate, anche questa
+
+    def test_filtro_per_squadra_id(self):
+        ins_g(giornata("g1"))
+        st.insert_record("squadre", squadra("sq_b", "n1", nome="B"))
+        st.insert_record("giornate", giornata("g2", squadra_id="sq_b"))
+        self.assertEqual([g["id"] for g in st.list_records("giornate", {"squadra_id": "sq_b"})], ["g2"])
+        self.assertEqual(st.list_records("giornate", {"squadra_id": "nessuna"}), [])
 
     def test_fk_utente(self):
         with self.assertRaises(st.IntegrityError):
@@ -341,15 +387,15 @@ class StorageContract(unittest.TestCase):
     def test_delete_consegna_la_toglie_dalle_giornate(self):
         for c in ("c1", "c2", "c3"):
             st.insert_record("consegne", consegna(c))
-        st.insert_record("giornate", giornata("g1", consegneIds=["c1", "c2", "c3"]))
-        st.insert_record("giornate", giornata("g2", consegneIds=["c2"]))
+        ins_g(giornata("g1", consegneIds=["c1", "c2", "c3"]))
+        ins_g(giornata("g2", consegneIds=["c2"]))
         self.assertTrue(st.delete_record("consegne", "c2"))
         self.assertEqual(st.get_record("giornate", "g1")["consegneIds"], ["c1", "c3"])
         self.assertEqual(st.get_record("giornate", "g2")["consegneIds"], [])
 
     def test_delete_giornata_non_elimina_le_consegne(self):
         st.insert_record("consegne", consegna("c1"))
-        st.insert_record("giornate", giornata(consegneIds=["c1"]))
+        ins_g(giornata(consegneIds=["c1"]))
         self.assertTrue(st.delete_record("giornate", "g1"))
         self.assertIsNotNone(st.get_record("consegne", "c1"))
 
@@ -373,7 +419,7 @@ class StorageContract(unittest.TestCase):
     def test_giornata_assegna_ordine_e_idempotenza(self):
         for c in ("c1", "c2", "c3"):
             st.insert_record("consegne", consegna(c))
-        st.insert_record("giornate", giornata())
+        ins_g(giornata())
         g = st.giornata_assegna("g1", ["c2", "c1"])
         self.assertEqual(g["consegneIds"], ["c2", "c1"])
         g = st.giornata_assegna("g1", ["c1", "c3"])                           # c1 già presente
@@ -383,7 +429,7 @@ class StorageContract(unittest.TestCase):
     def test_giornata_ops_non_toccano_versione(self):
         for c in ("c1", "c2"):
             st.insert_record("consegne", consegna(c))
-        st.insert_record("giornate", giornata())
+        ins_g(giornata())
         st.giornata_assegna("g1", ["c1", "c2"])
         st.giornata_riordina("g1", ["c2", "c1"])
         g = st.giornata_rimuovi("g1", "c1")
@@ -392,7 +438,7 @@ class StorageContract(unittest.TestCase):
     def test_giornata_assegna_errori(self):
         st.insert_record("consegne", consegna("c1", "n1"))
         st.insert_record("consegne", consegna("cx", "n2"))
-        st.insert_record("giornate", giornata())
+        ins_g(giornata())
         with self.assertRaises(st.NotFoundError):
             st.giornata_assegna("g1", ["c_nope"])
         with self.assertRaises(ValueError):                                   # altro negozio
@@ -403,14 +449,14 @@ class StorageContract(unittest.TestCase):
 
     def test_giornata_assegna_atomico_se_una_invalida(self):
         st.insert_record("consegne", consegna("c1"))
-        st.insert_record("giornate", giornata())
+        ins_g(giornata())
         with self.assertRaises(st.NotFoundError):
             st.giornata_assegna("g1", ["c1", "c_nope"])
         self.assertEqual(st.get_record("giornate", "g1")["consegneIds"], [])
 
     def test_giornata_rimuovi(self):
         st.insert_record("consegne", consegna("c1"))
-        st.insert_record("giornate", giornata(consegneIds=["c1"]))
+        ins_g(giornata(consegneIds=["c1"]))
         self.assertEqual(st.giornata_rimuovi("g1", "c1")["consegneIds"], [])
         self.assertEqual(st.giornata_rimuovi("g1", "c1")["consegneIds"], [])  # idempotente
         self.assertIsNotNone(st.get_record("consegne", "c1"))
@@ -420,7 +466,7 @@ class StorageContract(unittest.TestCase):
     def test_giornata_riordina(self):
         for c in ("c1", "c2", "c3"):
             st.insert_record("consegne", consegna(c))
-        st.insert_record("giornate", giornata(consegneIds=["c1", "c2", "c3"]))
+        ins_g(giornata(consegneIds=["c1", "c2", "c3"]))
         self.assertEqual(st.giornata_riordina("g1", ["c3", "c1", "c2"])["consegneIds"], ["c3", "c1", "c2"])
         self.assertEqual(st.get_record("giornate", "g1")["consegneIds"], ["c3", "c1", "c2"])
         for bad in (["c1", "c2"], ["c1", "c2", "c3", "c3"], ["c1", "c2", "cx"], []):
@@ -430,10 +476,10 @@ class StorageContract(unittest.TestCase):
 
     def test_insert_giornata_consegne_invalide(self):
         with self.assertRaises(st.NotFoundError):
-            st.insert_record("giornate", giornata(consegneIds=["c_nope"]))
+            ins_g(giornata(consegneIds=["c_nope"]))
         self.assertIsNone(st.get_record("giornate", "g1"))
         with self.assertRaises(ValueError):
-            st.insert_record("giornate", giornata(consegneIds=["a", "a"]))
+            ins_g(giornata(consegneIds=["a", "a"]))
 
     # ── insert_records ─────────────────────────────────────────────────────────
 
@@ -579,7 +625,7 @@ class StorageContract(unittest.TestCase):
     def test_giornata_ordine_dopo_rimozione_e_nuova_assegnazione(self):
         for c in ("c1", "c2", "c3", "c4"):
             st.insert_record("consegne", consegna(c))
-        st.insert_record("giornate", giornata(consegneIds=["c1", "c2", "c3"]))
+        ins_g(giornata(consegneIds=["c1", "c2", "c3"]))
         st.giornata_rimuovi("g1", "c2")
         g = st.giornata_assegna("g1", ["c4", "c2"])
         self.assertEqual(g["consegneIds"], ["c1", "c3", "c4", "c2"])
@@ -588,8 +634,8 @@ class StorageContract(unittest.TestCase):
     def test_list_giornate_con_molte_consegne_e_filtri(self):
         ids = [f"c{i:03d}" for i in range(60)]
         st.insert_records("consegne", [consegna(i) for i in ids])
-        st.insert_record("giornate", giornata("g1", consegneIds=ids))
-        st.insert_record("giornate", giornata("g2", nid="n2"))
+        ins_g(giornata("g1", consegneIds=ids))
+        ins_g(giornata("g2", nid="n2"))
         self.assertEqual(st.get_record("giornate", "g1")["consegneIds"], ids)
         self.assertEqual([g["id"] for g in st.list_records("giornate", {"negozio_id": "n2"})], ["g2"])
         self.assertEqual(st.list_records("giornate", {"negozio_id": "n2"})[0]["consegneIds"], [])
@@ -783,6 +829,17 @@ class SchemaGuard(_GuardBase):
 @unittest.skipUnless(BACKEND == "json", "specifico del backend json")
 class SchemaGuardJson(_GuardBase):
 
+    def test_giornate_con_vecchio_campo_squadra_rifiutate(self):
+        # archivio V2 di un'edizione precedente: la squadra era un nome, non un riferimento
+        st.init_storage_v2()
+        st.insert_record("negozi", {"id": "n1", "nome": "N1"})
+        path = os.path.join(st.DATA_DIR, "giornate.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump([{"id": "g1", "negozio_id": "n1", "data": "2026-01-01", "squadra": "A",
+                        "consegneIds": [], "versione": 1}], f)
+        msg = self._assert_rifiuta("squadra_id", "g1")
+        self.assertIn("cartella dati nuova", msg)
+
     def test_file_v1_vuoti_equivalgono_ad_archivio_vuoto(self):
         self._v1_state(with_data=False)
         st.init_storage_v2()
@@ -888,7 +945,7 @@ class SqlSpecific(unittest.TestCase):
         st.insert_record("negozi", {"id": "n1", "nome": "N1"})
         st.insert_record("consegne", consegna("c1"))
         with self.assertRaises(st.NotFoundError):                             # giornata con consegna inesistente
-            st.insert_record("giornate", giornata(consegneIds=["c1", "c_nope"]))
+            ins_g(giornata(consegneIds=["c1", "c_nope"]))
         self.assertEqual(st.list_records("giornate"), [])                     # nemmeno la giornata esiste
 
     def test_scritture_concorrenti_su_record_diversi(self):
