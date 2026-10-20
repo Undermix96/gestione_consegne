@@ -2,7 +2,7 @@
 
 Sistema completo per la gestione di consegne e installazioni, progettato per team di lavoro. Permette di pianificare le attività, assegnarle a squadre e monitorare lo stato delle consegne.
 
-> 🚧 **V2 in sviluppo (branch `v2-docker`):** login multi-utente, permessi per tipo di account e multi-negozio. Le sezioni marcate **🚧 V2** descrivono la versione in sviluppo e **non sono ancora disponibili** su `main`. Stato e fasi di avanzamento: `AGENTS.md`, §11. Al momento sono pronti lo storage (fase 1), il server (fase 2) e il frontend (fase 3); anche la migrazione dei dati (`migrate.py`, fase 4) è pronta. Resta il collaudo integrato (fase 5).
+> 🚧 **V2 in sviluppo (branch `v2-docker`):** login multi-utente, permessi per tipo di account e multi-negozio. Le sezioni marcate **🚧 V2** descrivono la versione in sviluppo e **non sono ancora disponibili** su `main`. Stato e fasi di avanzamento: `AGENTS.md`, §11. Al momento sono pronti lo storage (fase 1), il server (fase 2) e il frontend (fase 3); anche la migrazione dei dati (`migrate.py`, fase 4) è pronta. Il collaudo integrato (fase 5) è stato eseguito: vedi `AGENTS.md` §11.
 
 ## 📋 Funzionalità principali
 
@@ -376,7 +376,7 @@ Categorie: `[AUTH]`, `[UTENTI]`, `[DATI]`, `[NEGOZI]`, `[TIPI_ACCOUNT]`. In Dock
 2. Filtra sempre per `negozio_id` e registra l'operazione nel log con categoria `[DATI]`
 3. Le modifiche allo schema vanno fatte in `storage.py` su **tutti e tre** i backend e riportate in `migrate.py`
 4. Prima di iniziare una fase di sviluppo V2 leggi `AGENTS.md` §11 (stato, metodo, punti aperti)
-5. Test dello storage e del server (in Docker, con database temporanei separati dalla produzione): `docker compose -f compose.test.yaml up --build --exit-code-from tests`, poi `docker compose -f compose.test.yaml down`. Controlli statici del frontend e test di `sha256.js` (Node nell'immagine `node:22-alpine`, solo per i test): `docker compose -f compose.test.yaml run --rm jstests`. Dettagli in `AGENTS.md` §6 e §11
+5. Test dello storage e del server (in Docker, con database temporanei separati dalla produzione): `docker compose -f compose.test.yaml up --build --exit-code-from tests`, poi `docker compose -f compose.test.yaml down`. Controlli statici del frontend e test di `sha256.js` (Node nell'immagine `node:22-alpine`, solo per i test): `docker compose -f compose.test.yaml run --rm jstests`. Il collaudo integrato (sistema vero: migrazione, server, tutti i backend, concorrenza) gira alla fine di `run_all.sh` (`TEST_INTEGRATION=0` lo salta); la prova con le immagini vere dello stack (compose, `docker run`, stack Portainer) è `bash tests/stack.sh`, da lanciare sull'host con Docker. Dettagli in `AGENTS.md` §6 e §11
 
 ### Build e push dell'immagine
 ```bash

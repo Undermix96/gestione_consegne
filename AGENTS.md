@@ -4,7 +4,7 @@ Documento di contesto per agenti AI. Descrive stato attuale del progetto, archit
 
 ---
 
-> **Stato del branch `v2-docker`:** questo documento descrive la **V2** (obiettivo del branch). **`storage.py` è già V2** (fase 1) e lo è anche **`server.py`** (fase 2, collaudato con `tests/test_server.py` su json, PostgreSQL e MySQL); anche il **frontend** (fase 3, collaudato con controlli statici in Node e con un giro completo nel browser contro il server V2). Anche `migrate.py` (fase 4) è pronto; resta il test integrato (fase 5), vedi [§11](#11-stato-di-implementazione-v2). **🚧 V2** indica una funzionalità della V2 non ancora presente su `main`; dove è già implementata e collaudata su questo branch il titolo lo dice (es. "implementata", ✅). Il design V2 proviene dal branch `dev` (versione Windows, mai andata in produzione) ed è stato adattato a Docker e allo storage a più backend.
+> **Stato del branch `v2-docker`:** questo documento descrive la **V2** (obiettivo del branch). **`storage.py` è già V2** (fase 1) e lo è anche **`server.py`** (fase 2, collaudato con `tests/test_server.py` su json, PostgreSQL e MySQL); anche il **frontend** (fase 3, collaudato con controlli statici in Node e con un giro completo nel browser contro il server V2). Tutte le fasi sono completate, compreso il collaudo integrato (fase 5) e la `squadra_id` obbligatoria (fase 6), vedi [§11](#11-stato-di-implementazione-v2). **🚧 V2** indica una funzionalità della V2 non ancora presente su `main`; dove è già implementata e collaudata su questo branch il titolo lo dice (es. "implementata", ✅). Il design V2 proviene dal branch `dev` (versione Windows, mai andata in produzione) ed è stato adattato a Docker e allo storage a più backend.
 
 ## Indice
 
@@ -119,6 +119,10 @@ gestione_consegne/
 │   ├── test_storage_contract.py
 │   ├── js/run.mjs          # 🚧 V2: controlli statici del frontend e test di sha256.js (Node, solo nei test) ✅
 │   ├── test_migrate.py     # 🚧 V2: test di migrate.py (logica pura e da un capo all'altro) ✅
+│   ├── integrazione_*.py   # 🚧 V2: collaudo integrato sul sistema vero (processi, HTTP, tutti i backend) ✅
+│   ├── dbtool.py           # strumento dei test di integrazione (opera su un backend per processo)
+│   ├── db-init/            # script che creano il secondo database di test (sorgente V1)
+│   ├── stack.sh            # prova con le immagini vere (compose, docker, stack): da lanciare sull'host ✅
 │   ├── test_server.py      # 🚧 V2: test del server (auth, permessi, multi-negozio, REST) ✅
 │   └── run_all.sh          # esegue la suite su ogni backend (TEST_BACKENDS)
 ├── compose.test.yaml       # 🚧 V2: database temporanei per i test (separato dalla produzione)
@@ -998,7 +1002,7 @@ Questa sezione traccia l'avanzamento della V2 sul branch `v2-docker` (partito da
 | 2 | `server.py`: Challenge-Response, sessioni, endpoint REST, permessi, filtro `negozio_id`, `/api/stato`, creazione superadmin | ✅ completata — vedi "Scelte implementative della fase 2" sotto; 52 test del server su json, `postgres:16`, `mysql:8.4` |
 | 3 | Frontend V2 (vedi metodo sotto) | ✅ completata — vedi "Scelte implementative della fase 3"; controlli statici e `sha256.js` in Node (`tests/js/run.mjs`), giro completo nel browser contro il server V2 (a mano, non automatizzato) |
 | 4 | `migrate.py` | ✅ completata — vedi "Scelte implementative della fase 4"; 27 test (logica pura e da un capo all'altro su json, `postgres:16`, `mysql:8.4`), provata anche con `docker run`, `docker compose` e uno stack in stile Portainer |
-| 5 | Test integrato: migrazione → primo login superadmin → negozio → tipo account → utente → login → operatività, su tutti e 3 i backend | ⬜ |
+| 5 | Test integrato: migrazione → primo login superadmin → negozio → tipo account → utente → login → operatività, su tutti e 3 i backend | ✅ completata — vedi "Collaudo integrato della fase 5" |
 | 6 | `squadra_id` al posto del nome squadra nelle giornate (storage, server, frontend, migrazione) | ✅ completata (anticipata prima della fase 5) — vedi "Scelte implementative della fase 6" |
 
 Ogni fase è un commit separato (o gruppo di commit) rivisto prima di passare alla successiva.
@@ -1052,6 +1056,23 @@ Dove il design di §5 lasciava margine, o dove `dev` è stato migliorato:
 - **Non è previsto cambiare la squadra di una giornata già creata** (come in V1): servirebbe un endpoint e un permesso nuovi. Se si sbaglia squadra, si elimina e si ricrea la giornata.
 - **Migrazione (V1 → V2), regole sul nome della squadra:** (1) nome uguale a una squadra → quella; altrimenti confronto senza maiuscole e spazi (avviso); (2) squadre con lo stesso nome → la prima (avviso); (3) nome senza squadra corrispondente → la squadra viene **creata** (avviso); (4) nome vuoto o assente → squadra "Non assegnata" (`MIGRATE_SQUADRA_NON_ASSEGNATA`), creata **solo se almeno una giornata ne ha bisogno** e riusata se esiste già una squadra con quel nome. Il rapporto elenca avvisi e note. Il file di esportazione resta nel formato V1 (con i nomi). Un archivio V2 con giornate senza `squadra_id` o con il vecchio `squadra` viene rifiutato dalla convalida.
 - **Test:** storage (obbligatorietà, esistenza, negozio, eliminazione bloccata e poi consentita, filtro, rifiuto dei vecchi archivi json) su json, PostgreSQL e MySQL; server (richiesta di `squadra_id`, 403/400, rinomina che non tocca le giornate, 409 e sblocco, polling); migrazione (le quattro regole, nessuna squadra in più se non serve, nome personalizzato, archivio V2 vecchio); frontend con i controlli statici e un giro nel browser (modal senza squadre, badge, rinomina, blocco e sblocco, utente senza `squadre.leggi`).
+
+### Collaudo integrato della fase 5
+Prova del **sistema vero** (processi, HTTP, database reali), non dei singoli pezzi. Tre livelli:
+
+**1. Test di integrazione nei container di test** (`tests/integrazione_*.py`, girano una volta sola alla fine di `run_all.sh`; `TEST_INTEGRATION=0` li salta). Ogni operazione su un backend avviene in un processo dedicato (`tests/dbtool.py`, `integrazione_lib.py`), così un solo test usa json, PostgreSQL e MySQL insieme; `compose.test.yaml` crea un secondo database di test (`tests/db-init/`) per usare un database sia come sorgente sia come destinazione sullo stesso server.
+- **Matrice** (`integrazione_scenari.py`): 4 sorgenti V1 (json, PostgreSQL, MySQL, `dati.json`) × 3 destinazioni = 12 scenari identici: rapporto senza scritture → migrazione con verifica → seconda migrazione rifiutata → il vero `server.py` parte → primo accesso del superadmin con cambio password obbligatorio → tipo account e utenti → i dati migrati sono tutti presenti e corretti (campi, ordine, squadre risolte per nome, "Non assegnata", "Ghost" creata, id V1 conservati) → operatività (squadra, giornata, consegna, assegna, riordina, completa, conflitto 409 tra due utenti, rimozione, eliminazione di squadre bloccata e poi consentita) → secondo negozio isolato → riavvio del server (dati sì, sessioni no) → controllo di integrità dell'archivio.
+- **Catena V2 → V2** su un sistema già in uso (con utenti, tipi e dati creati dal server): json → PostgreSQL → MySQL → json e json → MySQL → PostgreSQL → json; ogni copia è identica (ignorando `versione`) e funziona con le stesse credenziali.
+- **Concorrenza** (`integrazione_robustezza.py`, su ogni backend): 10 scritture sulla stessa consegna con la stessa `versione` → ne riesce una sola, le altre 409, valore finale del vincitore; creazioni, assegnazioni, eliminazioni e login in parallelo senza perdite né doppioni; letture durante le scritture mai errate né "all'indietro"; nessun `Traceback` nei log del server.
+- **Protezioni:** il server e la migrazione rifiutano (codice 2) dati V1 nella destinazione, una migrazione interrotta e una destinazione già usata, senza modificarla.
+- **Base dati grande:** 5.000 consegne e 500 giornate. Tempi misurati in Docker su questa macchina: migrazione con verifica di ogni record json ≈ 24 s (la ricerca delle chiavi esterne è lineare: adatto a installazioni piccole, §10), PostgreSQL ≈ 5 s, MySQL ≈ 7 s; lettura di consegne e giornate 0,1-0,4 s; una scrittura con risposta completa 0,2-0,6 s.
+- Controllati con bug intenzionali (conflitto di versione ignorato dal server).
+
+**2. Stack con le immagini vere** (`tests/stack.sh`, da lanciare sull'host con Docker): compila l'immagine e, per json, PostgreSQL e MySQL, usa `compose.yaml` con il profilo del database (rapporto, migrazione, seconda migrazione rifiutata, avvio dell'app, `healthcheck` dell'immagine `healthy`, giro HTTP nel container, porta pubblicata), poi la migrazione "alla maniera della GUI di Docker" (`docker run`, senza `read_only` né `tmpfs`, con e senza cartella di migrazione montata) e `compose.migrate.yaml` con un database in una rete Docker a parte (creazione del database compresa). Usa progetto, immagine e porte proprie (`gc-stack-test`): non tocca l'installazione.
+
+**3. Giro nel browser** (manuale, nel browser integrato di Claude, contro il sistema migrato da json a PostgreSQL): primo login e cambio password obbligatorio (anche dopo un ricaricamento), pannelli superadmin, operatività, conflitto 409, sessione invalidata, riavvio e disconnessione, stampa, nomi con HTML. Eseguito anche in questa fase sul sistema migrato con container veri (migrazione json → PostgreSQL con squadre risolte e creata "Non assegnata", login con cambio password obbligatorio anche dopo un ricaricamento, dati e badge delle giornate, stampa, blocco dell'eliminazione della squadra, conflitto 409 con un secondo utente, riavvio del server con ritorno al login e dati intatti; nella console solo gli errori HTTP provocati apposta). Non è automatizzato (richiederebbe un browser automatico solo per i test).
+
+**Cosa il collaudo non copre:** la GUI di Synology DSM 7.1 (nessun NAS disponibile: le istruzioni in README seguono gli stessi parametri provati con `docker run`/compose, ma i nomi delle voci vanno verificati sul NAS); i dati reali di produzione (solo quelli possono rivelare incoerenze: **prima della migrazione vera eseguire il solo rapporto — senza `MIGRATE_EXECUTE` — su una copia dei dati**, che elenca problemi, avvisi e squadre che verrebbero create senza scrivere nulla); l'architettura ARM (il NAS è x64 e l'immagine è compilata per x64).
 
 ### Metodo e regole
 - **Non riscrivere a memoria il codice del branch `dev`:** si parte dai file di `dev` (`git show origin/dev:<file>`) e si adattano.
