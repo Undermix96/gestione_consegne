@@ -69,7 +69,11 @@ export async function setSquadraColor(id, idx) {
 export async function deleteSquadra(id) {
   const s = db.squadre.find(x => x.id === id);
   if (!s) return;
-  if (!confirm(`Eliminare la squadra "${s.nome}"? Le giornate assegnate perderanno la squadra.`)) return;
+  if ((db.giornate || []).some(g => g.squadra_id === id)) {
+    toast('Impossibile eliminare la squadra: ha giornate assegnate. Elimina prima le giornate.');
+    return;
+  }
+  if (!confirm(`Eliminare la squadra "${s.nome}"?`)) return;
 
   setSaving();
   try {

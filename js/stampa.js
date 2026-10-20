@@ -3,7 +3,7 @@
  */
 
 import { db, currentGiornataId } from './store.js';
-import { fmtDate, escHtml } from './utils.js';
+import { fmtDate, escHtml, findSquadra } from './utils.js';
 
 // Tutti i dati dell'utente sono escapati: la finestra di stampa è della stessa origine dell'app
 // (avrebbe accesso al token di sessione) e un nome con codice HTML non deve mai essere eseguito.
@@ -13,6 +13,7 @@ export function stampaPDF() {
   const g = db.giornate.find(x => x.id === currentGiornataId);
   if (!g) return;
 
+  const nomeSquadra = findSquadra(g.squadra_id)?.nome || '';
   const tipoLabel = {
     consegna:      'Solo consegna',
     installazione: 'Installazione semplice',
@@ -87,7 +88,7 @@ export function stampaPDF() {
 <html lang="it">
 <head>
 <meta charset="UTF-8"/>
-<title>Giornata ${fmtDate(g.data)}${g.squadra ? ' \u2014 ' + e(g.squadra) : ''}</title>
+<title>Giornata ${fmtDate(g.data)}${nomeSquadra ? ' \u2014 ' + e(nomeSquadra) : ''}</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: Arial, sans-serif; font-size: 11px; color: #111; background: #fff; }
@@ -123,7 +124,7 @@ export function stampaPDF() {
 </head>
 <body>
 <div class="pdf-header">
-  <h1>Giornata del ${fmtDate(g.data)}${g.squadra ? ' \u2014 ' + e(g.squadra) : ''}</h1>
+  <h1>Giornata del ${fmtDate(g.data)}${nomeSquadra ? ' \u2014 ' + e(nomeSquadra) : ''}</h1>
   <div class="sub">${consegne.length} consegn${consegne.length === 1 ? 'a' : 'e'} programmat${consegne.length === 1 ? 'a' : 'e'}</div>
   <div class="sub-right">Stampato il ${new Date().toLocaleDateString('it-IT')}</div>
 </div>

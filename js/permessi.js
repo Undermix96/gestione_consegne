@@ -35,13 +35,14 @@ export const PERMESSI = [
 export const DIPENDENZE = {
   'consegne.scrivi':           ['consegne.leggi'],
   'consegne.elimina':          ['consegne.leggi'],
+  'giornate.leggi':            ['squadre.leggi'],     // il nome della squadra si legge da squadre
   'giornate.crea':             ['giornate.leggi', 'squadre.leggi'],
   'giornate.elimina':          ['giornate.leggi'],
   'giornate.assegna':          ['giornate.leggi', 'consegne.leggi'],
   'giornate.riordina':         ['giornate.leggi'],
   'giornate.segna_completata': ['giornate.leggi'],
   'squadre.gestisci':          ['squadre.leggi'],
-  'stampa.pdf':                ['giornate.leggi', 'consegne.leggi'],
+  'stampa.pdf':                ['giornate.leggi', 'consegne.leggi', 'squadre.leggi'],
   'utenti.crea':               ['utenti.leggi', 'tipi_account.leggi'],
   'utenti.modifica':           ['utenti.leggi', 'tipi_account.leggi'],
   'utenti.elimina':            ['utenti.leggi'],

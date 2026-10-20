@@ -85,11 +85,12 @@ export function openNewGiornataModal() {
 export async function saveNuovaGiornata() {
   const data    = document.getElementById('f_nuovaGiornata').value;
   if (!data) { toast('Inserisci una data'); return; }
-  const squadra = document.getElementById('f_nuovaGiornataSquadra').value;
+  const squadra_id = document.getElementById('f_nuovaGiornataSquadra').value;
+  if (!squadra_id) { toast('Crea prima almeno una squadra (Impostazioni)'); return; }
 
   setSaving();
   try {
-    const result = await createGiornata({ data, squadra });
+    const result = await createGiornata({ data, squadra_id });
 
     // Salva gli id esistenti PRIMA di aggiornare lo store,
     // così possiamo identificare quale giornata è quella appena creata.

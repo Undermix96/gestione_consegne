@@ -73,16 +73,21 @@ export function tipoBadge(tipo) {
   return `<span class="tipo-badge ${cls}">${label}</span>`;
 }
 
-export function getSquadraColorIndex(nome) {
-  if (!nome) return -1;
-  const sq = (db.squadre || []).find(s => s.nome === nome);
-  return sq ? (sq.colorIdx ?? 0) : 0;
+// Le giornate referenziano la squadra per id (giornata.squadra_id): nome e colore si cercano in db.squadre.
+// Senza il permesso squadre.leggi la lista è vuota: il badge semplicemente non si mostra.
+export function findSquadra(squadraId) {
+  return squadraId ? (db.squadre || []).find(s => s.id === squadraId) || null : null;
 }
 
-export function sqBadgeHtml(nome) {
-  if (!nome) return '';
-  const idx = getSquadraColorIndex(nome);
-  return `<span class="sq-badge sq-c${idx}">${escHtml(nome)}</span>`;
+export function getSquadraColorIndex(squadraId) {
+  const sq = findSquadra(squadraId);
+  return sq ? (sq.colorIdx ?? 0) : -1;
+}
+
+export function sqBadgeHtml(squadraId) {
+  const sq = findSquadra(squadraId);
+  if (!sq) return '';
+  return `<span class="sq-badge sq-c${sq.colorIdx ?? 0}">${escHtml(sq.nome)}</span>`;
 }
 
 // ── Articoli helpers ─────────────────────────────
@@ -111,8 +116,7 @@ export function tipiConsegnaBadges(c) {
 
 export function squadraBadgeForConsegna(cid) {
   const g = db.giornate.find(x => (x.consegneIds || []).includes(cid));
-  if (!g || !g.squadra) return '<span style="color:var(--muted);font-size:11px;">—</span>';
-  return sqBadgeHtml(g.squadra);
+  return (g && sqBadgeHtml(g.squadra_id)) || '<span style="color:var(--muted);font-size:11px;">—</span>';
 }
 
 // ── Toast ────────────────────────────────────────

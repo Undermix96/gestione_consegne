@@ -6,7 +6,7 @@ import { db, currentGiornataId, setEditingConsegnaId, editingConsegnaId } from '
 import { applyServerResponse, setSaving, syncOk, reportError } from './sync.js';
 import { createConsegna, updateConsegna, deleteConsegna } from './api.js';
 import { renderAll, renderLista, renderGiornata, renderSidebar } from './render.js';
-import { today, fmtDate, escHtml, toast, openModal, closeModal } from './utils.js';
+import { today, fmtDate, escHtml, findSquadra, toast, openModal, closeModal } from './utils.js';
 
 // ── Open modal ───────────────────────────────────
 
@@ -71,7 +71,8 @@ function fillConsegnaForm(c) {
 
   if (c.giornoConsegna) {
     const g       = db.giornate.find(x => x.data === c.giornoConsegna && (x.consegneIds || []).includes(c.id));
-    const squadra = g && g.squadra ? ` — ${g.squadra}` : '';
+    const sq      = g ? findSquadra(g.squadra_id) : null;
+    const squadra = sq ? ` — ${sq.nome}` : '';
     document.getElementById('f_giornataAssegnata_display').textContent = fmtDate(c.giornoConsegna) + squadra;
   } else {
     document.getElementById('f_giornataAssegnata_display').textContent = '—';

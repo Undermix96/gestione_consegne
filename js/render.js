@@ -185,7 +185,7 @@ export function renderSidebar() {
     item.innerHTML = `
       <span class="day-dot" style="background:${past ? 'var(--done)' : 'var(--sched)'}"></span>
       <span>${fmtDate(g.data)}</span>
-      ${g.squadra ? sqBadgeHtml(g.squadra) : ''}
+      ${sqBadgeHtml(g.squadra_id)}
       <span class="day-badge">${count}</span>
     `;
     item.addEventListener('click', () => selectGiornata(g.id));
@@ -219,7 +219,7 @@ export function renderGiornata(id) {
   const canAssegna = hasPermesso('giornate.assegna');
 
   document.getElementById('giornataTitle').innerHTML =
-    `Giornata del ${fmtDate(g.data)}${g.squadra ? ' &nbsp;' + sqBadgeHtml(g.squadra) : ''}`;
+    `Giornata del ${fmtDate(g.data)} &nbsp;${sqBadgeHtml(g.squadra_id)}`;
 
   const wrap = document.getElementById('giornataWrap');
   wrap.innerHTML = `
@@ -308,11 +308,18 @@ export function populateSquadreSelect() {
   const sel = document.getElementById('f_nuovaGiornataSquadra');
   if (!sel) return;
   const cur = sel.value;
-  sel.innerHTML = '<option value="">— Nessuna squadra —</option>';
+  sel.innerHTML = '';
+  // la squadra è obbligatoria: nessuna opzione vuota, la prima è preselezionata
   (db.squadre || []).forEach(s => {
     const o = document.createElement('option');
-    o.value = s.nome; o.textContent = s.nome;
-    if (s.nome === cur) o.selected = true;
+    o.value = s.id; o.textContent = s.nome;
+    if (s.id === cur) o.selected = true;
     sel.appendChild(o);
   });
+  // senza squadre non si può creare una giornata
+  const nessuna = (db.squadre || []).length === 0;
+  const hint = document.getElementById('f_nuovaGiornataHint');
+  if (hint) hint.style.display = nessuna ? '' : 'none';
+  const btn = document.getElementById('btnSalvaGiornata');
+  if (btn) btn.disabled = nessuna;
 }
