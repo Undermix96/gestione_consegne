@@ -670,10 +670,50 @@ def h_delete_utente(ctx, uid):
 
 # ─── ENDPOINT: consegne ──────────────────────────────────────────────────────
 
+TIPI_CONSEGNA = {"consegna", "installazione", "incasso", "ins_incasso", "ins_muro", "ins_sbs"}
+# Campi noti di una consegna (inviati dal frontend, più i campi legacy V1 ancora letti da render/stampa): di testo
+CONSEGNA_CAMPI = {
+    "dataPrenotazione", "stato", "nome", "cognome", "citta", "indirizzo", "tel1", "tel2", "raee", "piano",
+    "noteAbitazione", "preferenzePeriodo", "giornoConsegna", "fasciaOraria", "note", "articoli",
+    "tipoProdotto", "codiceProdotto", "descrizioneProdotto", "tipoConsegna",
+}
+ARTICOLO_CAMPI = {"tipoConsegna", "tipo", "codice", "desc"}
+MAX_TESTO = 2000      # caratteri per campo di testo di una consegna
+MAX_ARTICOLI = 50
+MAX_EXTRA = 20        # campi sconosciuti (conservati come extra) per richiesta
+MAX_TESTO_ARTICOLO = 500
+
+def clean_articoli(v):
+    """Struttura di `articoli`: il frontend la dà per scontata, un elemento malformato (null, tipo
+    sconosciuto) romperebbe il rendering per tutti gli utenti del negozio."""
+    if not isinstance(v, list) or len(v) > MAX_ARTICOLI:
+        raise HttpError(400, "articoli non valido")
+    for a in v:
+        if not isinstance(a, dict) or not set(a) <= ARTICOLO_CAMPI:
+            raise HttpError(400, "articolo non valido")
+        if a.get("tipoConsegna", "consegna") not in TIPI_CONSEGNA:
+            raise HttpError(400, "tipoConsegna non valido")
+        for k in ("tipo", "codice", "desc"):
+            x = a.get(k, "")
+            if not isinstance(x, str) or len(x) > MAX_TESTO_ARTICOLO:
+                raise HttpError(400, f"articolo.{k} non valido")
+    return v
+
 def consegna_fields(body):
     f = {k: v for k, v in body.items() if k not in ("id", "negozio_id", "versione") and not k.startswith("_")}
+    # campi sconosciuti: ammessi (lo storage li conserva come "extra" per i campi futuri) ma limitati
+    sconosciuti = set(f) - CONSEGNA_CAMPI
+    if len(sconosciuti) > MAX_EXTRA or any(len(k) > 50 or len(json.dumps(f[k])) > MAX_TESTO for k in sconosciuti):
+        raise HttpError(400, "Troppi campi aggiuntivi o troppo grandi")
     if "stato" in f and f["stato"] not in STATI_CONSEGNA:
         raise HttpError(400, "stato non valido")
+    if "tipoConsegna" in f and f["tipoConsegna"] not in TIPI_CONSEGNA:
+        raise HttpError(400, "tipoConsegna non valido")
+    for k, v in f.items():
+        if k in CONSEGNA_CAMPI and k != "articoli" and (not isinstance(v, str) or len(v) > MAX_TESTO):
+            raise HttpError(400, f"{k} deve essere un testo di al massimo {MAX_TESTO} caratteri")
+    if "articoli" in f:
+        clean_articoli(f["articoli"])
     return f
 
 @route("GET", "/api/consegne", "consegne.leggi")
@@ -871,7 +911,23 @@ STATIC_TYPES = {
 }
 STATIC_DIRS = ("css", "js")
 
+# Header di sicurezza su ogni risposta. 'unsafe-inline' serve agli script e ai gestori inline di index.html.
+SECURITY_HEADERS = (
+    ("X-Content-Type-Options", "nosniff"),
+    ("X-Frame-Options", "DENY"),
+    ("Referrer-Policy", "no-referrer"),
+    ("Content-Security-Policy",
+     "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
+     "img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; "
+     "frame-ancestors 'none'; base-uri 'none'; form-action 'self'"),
+)
+
 class Handler(http.server.BaseHTTPRequestHandler):
+
+    def end_headers(self):
+        for k, v in SECURITY_HEADERS:
+            self.send_header(k, v)
+        super().end_headers()
 
     timeout = 15   # secondi di inattività del socket: chiude connessioni mute o inviate a pezzi (slowloris)
 

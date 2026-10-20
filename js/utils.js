@@ -54,7 +54,7 @@ export function statoPill(stato) {
     annullata:        ['pill-cancel', '✕',  'Annullata'],
     da_riprogrammare: ['pill-cancel', '🔄', 'Da riprogrammare'],
   };
-  const [cls, icon, label] = map[stato] || map['attesa'];
+  const [cls, icon, label] = (Object.hasOwn(map, stato) && map[stato]) || map['attesa'];
   return `<span class="pill ${cls}"><span class="dot"></span>${icon} ${label}</span>`;
 }
 
@@ -69,7 +69,7 @@ export function tipoBadge(tipo) {
     ins_muro:        ['tipo-ins-muro',    '🧱 Installazione a Muro'],
     ins_sbs:         ['tipo-ins-sbs',     '↔️ Installazione Side-by-Side'],
   };
-  const [cls, label] = map[tipo] || ['tipo-consegna', escHtml(tipo || '—')];
+  const [cls, label] = (Object.hasOwn(map, tipo) && map[tipo]) || ['tipo-consegna', escHtml(tipo || '—')];
   return `<span class="tipo-badge ${cls}">${label}</span>`;
 }
 

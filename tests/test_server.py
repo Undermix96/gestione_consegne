@@ -522,6 +522,29 @@ class TestConsegne(Base):
         self.assertNotIn("_connectedClients", rec)
         self.assertIsNone(st.get_record("consegne", "altro"))
 
+    def test_campi_e_articoli_validati(self):
+        w = self.world()
+        t = w["a1"]
+        base = {"nome": "Mario", "cognome": "Rossi"}
+        cattivi = [
+            {"articoli": [None]}, {"articoli": ["x"]}, {"articoli": "x"}, {"articoli": [{}] * 51},
+            {"articoli": [{"tipoConsegna": "constructor"}]}, {"articoli": [{"tipoConsegna": "__proto__"}]},
+            {"articoli": [{"tipo": 5}]}, {"articoli": [{"desc": "x" * 501}]}, {"articoli": [{"altro": "x"}]},
+            {"tipoConsegna": "constructor"}, {"campo_enorme": "x" * 2001}, {f"k{i}": 1 for i in range(21)}, {"note": 5}, {"note": ["a"]},
+            {"note": "x" * 2001},
+        ]
+        for extra in cattivi:
+            self.assertEqual(self.call("POST", "/api/consegne", {**base, **extra}, t)[0], 400, extra)
+        ok = {**base, "articoli": [{"tipoConsegna": "ins_muro", "tipo": "TV", "codice": "A1", "desc": "x"}],
+              "tel1": "333", "raee": "si", "piano": "2"}
+        c = self.mk_consegna(t, **ok)
+        # anche in modifica
+        code, _ = self.call("PUT", f"/api/consegne/{c['id']}",
+                            {"versione": c["versione"], "articoli": [None]}, t)
+        self.assertEqual(code, 400)
+        self.assertEqual(self.call("PUT", f"/api/consegne/{c['id']}",
+                                   {"versione": c["versione"], "note": "ok"}, t)[0], 200)
+
     def test_stato_non_valido(self):
         w = self.world()
         self.assertEqual(self.call("POST", "/api/consegne", {"stato": "boh"}, w["a1"])[0], 400)
@@ -818,6 +841,27 @@ class TestVarie(Base):
             c.endheaders()
             self.assertEqual(c.getresponse().status, atteso, cl)
             c.close()
+
+    def test_header_di_sicurezza(self):
+        for path in ("/index.html", "/api/ping", "/api/nulla", "/js/main.js", "/server.py", "/"):
+            c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+            c.request("GET", path)
+            r = c.getresponse()
+            r.read()
+            self.assertEqual(r.getheader("X-Content-Type-Options"), "nosniff", path)
+            self.assertEqual(r.getheader("X-Frame-Options"), "DENY", path)
+            self.assertEqual(r.getheader("Referrer-Policy"), "no-referrer", path)
+            csp = r.getheader("Content-Security-Policy")
+            self.assertIn("frame-ancestors 'none'", csp, path)
+            self.assertIn("default-src 'self'", csp, path)
+            c.close()
+        # niente risorse esterne nel frontend (vincolo di progetto e CSP)
+        base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
+        for rel in ("index.html", "css/layout.css", "css/components.css", "css/theme.css"):
+            with open(os.path.join(base, rel), encoding="utf-8") as f:
+                txt = f.read()
+            self.assertNotIn("googleapis", txt, rel)
+            self.assertNotRegex(txt, r"(src|href)=[\"']https?://", rel)
 
     def test_timeout_sui_socket(self):
         self.assertTrue(srv.Handler.timeout and srv.Handler.timeout > 0)

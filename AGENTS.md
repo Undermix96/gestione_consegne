@@ -405,6 +405,8 @@ Un utente con `tipo_account_id: null` viene bloccato al login con messaggio "Acc
 - Il server filtra sempre per `negozio_id` su tutti gli endpoint operativi
 - Un utente non può eliminare se stesso
 - **Nessuna escalation di privilegi (SEC-02):** chi non è superadmin può creare un utente o cambiargli il tipo solo con un tipo i cui permessi sono contenuti nei propri, e può reimpostare la password, cambiare il tipo o eliminare solo utenti i cui permessi attuali sono contenuti nei propri (403 altrimenti). Funzione `check_not_escalating()` in `server.py`, usata da `h_create_utente`, `h_set_tipo` e `target_user()`
+- **Validazione delle consegne (SEC-03):** i campi noti sono testi ≤ 2000 caratteri; `articoli` è una lista di ≤ 50 oggetti con solo `tipoConsegna` (valore dell'elenco), `tipo`, `codice`, `desc`; i campi sconosciuti restano ammessi (conservati come `extra`) ma al massimo 20 per richiesta e ≤ 2000 caratteri ciascuno
+- **Header di sicurezza (SEC-04):** ogni risposta porta CSP (`default-src 'self'`, `frame-ancestors 'none'`, `unsafe-inline` solo per gli script/stili inline di `index.html`), `X-Frame-Options: DENY`, `nosniff`, `Referrer-Policy: no-referrer`. Non caricare risorse esterne dal frontend
 - **Limiti del socket (SEC-01):** `Handler.timeout = 15` s (connessioni mute o inviate a pezzi vengono chiuse); `Content-Length` negativo o non numerico → 400, oltre `MAX_BODY` → 413
 - Gli errori di concorrenza (`versione` non coincidente) rispondono **409 Conflict**; token mancante/scaduto **401**; permesso o negozio non coerente **403**
 
@@ -468,8 +470,8 @@ Revisione del codice di `v2-docker` (server, storage, frontend, Docker). Non son
 |----|------|----------|-------|
 | SEC-01 | Alta | DoS non autenticato: `Content-Length: -1` bloccava un thread su `rfile.read(-1)`; nessun timeout sul socket (slowloris) | ✅ corretto |
 | SEC-02 | Alta | Escalation di privilegi: `utenti.crea/modifica/elimina` permettevano di assegnare tipi più potenti o di reimpostare/eliminare utenti con più permessi | ✅ corretto |
-| SEC-03 | Media | `articoli` e `tipoConsegna` non validati: un dato malformato (`[null]`, `"constructor"`) rompe il rendering per tutto il negozio; nessun limite ai campi extra | 🔲 da fare |
-| SEC-04 | Media | Mancano gli header di sicurezza (CSP, `X-Frame-Options`, `nosniff`, `Referrer-Policy`); `css/layout.css` importa i font da Google (contrario al vincolo "nessuna dipendenza esterna") | 🔲 da fare |
+| SEC-03 | Media | `articoli` e `tipoConsegna` non validati: un dato malformato (`[null]`, `"constructor"`) rompe il rendering per tutto il negozio; nessun limite ai campi extra | ✅ corretto (server: struttura di `articoli`, `tipoConsegna`, testo ≤ 2000 caratteri, max 20 campi extra; client: `Object.hasOwn` in `tipoBadge`/`statoPill`) |
+| SEC-04 | Media | Mancano gli header di sicurezza (CSP, `X-Frame-Options`, `nosniff`, `Referrer-Policy`); `css/layout.css` importa i font da Google (contrario al vincolo "nessuna dipendenza esterna") | ✅ corretto (header in `Handler.end_headers`, `@import` rimosso: font di sistema) |
 | SEC-05 | Media | Credenziali su HTTP: `password_hash` e `nuova_hash` viaggiano in chiaro, SHA-256 senza salt (attacco a dizionario sul challenge osservato), token in chiaro; la lunghezza minima della password è solo lato client | accettato (vincolo HTTP, vedi "Limiti noti"); valutare HTTPS o KDF |
 | SEC-06 | Media | Nessun rate limiting su login e `/api/auth/challenge` (1000 challenge vive bloccano i login con 503); password iniziale `admin` | 🔲 aperto |
 | SEC-07 | Media | La revoca di permessi di un tipo account non vale per le sessioni attive (scadenza scorrevole, nessun limite assoluto) | 🔲 aperto |

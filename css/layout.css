@@ -2,7 +2,7 @@
    layout.css — Reset, body, header, sidebar, struttura
    ═══════════════════════════════════════════════ */
 
-@import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@300;400;500;600;700&display=swap');
+/* Nessun font esterno: i client non hanno internet (e la CSP lo vieta); si usano i font di sistema (fallback). */
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
