@@ -27,7 +27,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # ── Codice applicativo ────────────────────────────────────────────────────────
-COPY server.py storage.py import_data.py ./
+COPY server.py storage.py import_data.py migrate.py ./
 COPY index.html ./
 COPY css/ css/
 COPY js/  js/

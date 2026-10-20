@@ -1,0 +1,62 @@
+# compose.migrate.yaml — Migrazione dei dati verso la V2, file autonomo
+#
+# Pensato per chi NON ha il compose del progetto a portata di mano: Portainer (come "stack"), o un host
+# dove l'app gira come container singolo (es. Synology DSM 7.1 con il pacchetto Docker). Per la migrazione
+# da riga di comando insieme al resto dell'applicazione c'è il servizio `migrate` in compose.yaml.
+#
+# Senza MIGRATE_EXECUTE=1 stampa solo un rapporto e NON scrive nulla. Si legge nei log del container.
+#   1. primo avvio: lasciare MIGRATE_EXECUTE vuoto, leggere il rapporto nei log
+#   2. se non ci sono problemi: impostare MIGRATE_EXECUTE=1 e riavviare il container
+# Il container si ferma da solo a fine lavoro (restart: "no"). Se riparte per errore non fa danni: la
+# destinazione, ormai piena, viene rifiutata.
+#
+# Cartelle (percorsi ASSOLUTI dell'host; devono essere scrivibili dall'utente 1001 del container,
+# tranne la sorgente che è in sola lettura):
+#   SRC_HOST_DIR   sorgente: cartella dati V1 (json) oppure cartella con dati.json
+#   DATA_HOST_DIR  destinazione (backend json): cartella NUOVA e vuota che userà il server V2
+#   MIGRATE_HOST_DIR  dove salvare il file di esportazione (backup completo della sorgente)
+# Con un database (mysql/postgres) come sorgente o destinazione: DB_NETWORK = nome della rete Docker
+# del container del database (default: la rete bridge) e le variabili DB_* / SRC_DB_* qui sotto.
+#
+# Riferimento completo delle variabili: intestazione di migrate.py e README.md.
+
+name: gestione-consegne-migrate
+
+services:
+  migrate:
+    image: undermix/gestione-consegne:latest
+    command: ["python", "migrate.py"]
+    restart: "no"
+    healthcheck:
+      disable: true
+    environment:
+      # ── destinazione: gli stessi valori che userà il server V2 ──
+      DB_BACKEND:  "${DB_BACKEND:-json}"          # json | mysql | postgres
+      DATA_DIR:    /data
+      DB_HOST:     "${DB_HOST:-db}"
+      DB_PORT:     "${DB_PORT:-}"
+      DB_NAME:     "${DB_NAME:-gestione_consegne}"
+      DB_USER:     "${DB_USER:-}"
+      DB_PASSWORD: "${DB_PASSWORD:-}"
+      # ── sorgente ──
+      MIGRATE_SOURCE_KIND: "${MIGRATE_SOURCE_KIND:-v1}"   # v1 | file (dati.json) | v2
+      SRC_BACKEND:     "${SRC_BACKEND:-json}"             # json | mysql | postgres
+      SRC_DATA_DIR:    /source
+      SRC_FILE:        "${SRC_FILE:-/source/dati.json}"
+      SRC_DB_HOST:     "${SRC_DB_HOST:-}"
+      SRC_DB_PORT:     "${SRC_DB_PORT:-}"
+      SRC_DB_NAME:     "${SRC_DB_NAME:-}"
+      SRC_DB_USER:     "${SRC_DB_USER:-}"
+      SRC_DB_PASSWORD: "${SRC_DB_PASSWORD:-}"
+      # ── opzioni ──
+      MIGRATE_EXECUTE:      "${MIGRATE_EXECUTE:-}"        # 1 = scrive davvero
+      MIGRATE_CREATE_DB:    "${MIGRATE_CREATE_DB:-}"      # 1 = crea il database di destinazione se manca
+      MIGRATE_NEGOZIO_NOME: "${MIGRATE_NEGOZIO_NOME:-}"
+      MIGRATE_KEEP_ORPHANS: "${MIGRATE_KEEP_ORPHANS:-}"
+    volumes:
+      - "${SRC_HOST_DIR:-/volume1/docker/gestione-consegne/data}:/source:ro"
+      - "${DATA_HOST_DIR:-/volume1/docker/gestione-consegne-v2/data}:/data"
+      - "${MIGRATE_HOST_DIR:-/volume1/docker/gestione-consegne-v2/migration}:/migration"
+    # Rete Docker in cui raggiungere il database (nome della rete del container del database);
+    # senza database vale la rete bridge predefinita.
+    network_mode: "${DB_NETWORK:-bridge}"

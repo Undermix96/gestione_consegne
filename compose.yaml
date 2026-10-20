@@ -53,6 +53,58 @@ services:
     tmpfs:
       - /tmp
 
+  # ── Migrazione dei dati verso la V2 (una tantum) ─────────────────────────
+  # Senza MIGRATE_EXECUTE=1 stampa solo un rapporto e non scrive nulla. La destinazione è il backend
+  # configurato sopra (DB_BACKEND, volume app_data per json): deve essere NUOVA (volume o database vuoti).
+  # Opzioni e variabili SRC_*: vedi l'intestazione di migrate.py e il README.
+  #
+  #   docker compose --profile migrate run --rm migrate                      # solo rapporto
+  #   MIGRATE_EXECUTE=1 docker compose --profile migrate run --rm migrate   # migrazione vera
+  #
+  # (con un backend DB aggiungere il profilo del database, es. --profile postgres --profile migrate)
+  migrate:
+    profiles: ["migrate"]
+    image: undermix/gestione-consegne:latest
+    command: ["python", "migrate.py"]
+    environment:
+      DB_BACKEND:  "${DB_BACKEND:-json}"
+      DATA_DIR:    /data
+      DB_HOST:     db
+      DB_PORT:     "${DB_PORT:-3306}"
+      DB_NAME:     "${DB_NAME:-gestione_consegne}"
+      DB_USER:     "${DB_USER:-gcuser}"
+      DB_PASSWORD: "${DB_PASSWORD:-}"
+      MIGRATE_EXECUTE:       "${MIGRATE_EXECUTE:-}"
+      MIGRATE_SOURCE_KIND:   "${MIGRATE_SOURCE_KIND:-v1}"
+      MIGRATE_NEGOZIO_NOME:  "${MIGRATE_NEGOZIO_NOME:-}"
+      MIGRATE_CREATE_DB:     "${MIGRATE_CREATE_DB:-}"
+      MIGRATE_KEEP_ORPHANS:  "${MIGRATE_KEEP_ORPHANS:-}"
+      SRC_BACKEND:     "${SRC_BACKEND:-json}"
+      SRC_DATA_DIR:    /source
+      SRC_FILE:        "${SRC_FILE:-/source/dati.json}"
+      SRC_DB_HOST:     "${SRC_DB_HOST:-}"
+      SRC_DB_PORT:     "${SRC_DB_PORT:-}"
+      SRC_DB_NAME:     "${SRC_DB_NAME:-}"
+      SRC_DB_USER:     "${SRC_DB_USER:-}"
+      SRC_DB_PASSWORD: "${SRC_DB_PASSWORD:-}"
+    volumes:
+      - app_data:/data                                       # destinazione (backend json)
+      - "${MIGRATE_DIR:-./migration}:/migration"             # file di esportazione = backup della sorgente
+      - "${SRC_HOST_DIR:-./migration/sorgente}:/source:ro"   # sorgente json o dati.json (sola lettura)
+    depends_on:
+      db_mysql:
+        condition: service_healthy
+        required: false
+      db_postgres:
+        condition: service_healthy
+        required: false
+    restart: "no"
+    healthcheck:
+      disable: true
+    read_only: true
+    tmpfs:
+      - /tmp
+
   # ── MySQL 8.4 ────────────────────────────────────────────────────────────
   db_mysql:
     profiles: ["mysql"]
@@ -80,6 +132,12 @@ services:
       timeout: 5s
       retries: 10
       start_period: 30s
+    # L'app e la migrazione raggiungono il database come host "db" (DB_HOST): senza alias il nome
+    # del servizio sarebbe db_mysql / db_postgres e la risoluzione fallirebbe.
+    networks:
+      default:
+        aliases:
+          - db
     restart: unless-stopped
 
   # ── PostgreSQL 16 ─────────────────────────────────────────────────────────
@@ -102,6 +160,12 @@ services:
       timeout: 5s
       retries: 10
       start_period: 10s
+    # L'app e la migrazione raggiungono il database come host "db" (DB_HOST): senza alias il nome
+    # del servizio sarebbe db_mysql / db_postgres e la risoluzione fallirebbe.
+    networks:
+      default:
+        aliases:
+          - db
     restart: unless-stopped
 
 volumes:

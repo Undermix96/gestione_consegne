@@ -233,17 +233,22 @@ def db_negozio(ctx):
     out["_connectedClients"] = get_connected_count()
     return out
 
+def superadmin_record():
+    """Record del superadmin con la password di default (cambio obbligatorio al primo accesso).
+    Usato anche da migrate.py: la definizione è una sola."""
+    return {
+        "id": SUPERADMIN_ID, "username": "superadmin",
+        "password_hash": SUPERADMIN_DEFAULT_HASH,
+        "is_superadmin": True, "primo_login": True,
+        "creato_il": now_iso(),
+    }
+
 def ensure_superadmin():
     """Primo avvio: crea il superadmin con la password di default (cambio obbligatorio)."""
     if storage.get_record("utenti", SUPERADMIN_ID) is not None:
         return
     try:
-        storage.insert_record("utenti", {
-            "id": SUPERADMIN_ID, "username": "superadmin",
-            "password_hash": SUPERADMIN_DEFAULT_HASH,
-            "is_superadmin": True, "primo_login": True,
-            "creato_il": now_iso(),
-        })
+        storage.insert_record("utenti", superadmin_record())
         log("[AUTH] Creato l'account 'superadmin' con la password di default: cambiarla al primo accesso", "warning")
     except DuplicateError:
         pass   # creato in parallelo da un altro avvio
