@@ -73,6 +73,8 @@ class Base(unittest.TestCase):
             srv.sessions.clear()
         with srv.challenges_lock:
             srv.challenges.clear()
+        with srv.fails_lock:
+            srv.fails.clear()
         with srv.timestamps_lock:
             srv.timestamps.clear()
 
@@ -337,16 +339,81 @@ class TestPermessi(Base):
         self.assertEqual(set(d), {"consegne", "_connectedClients"})
         self.assertEqual(len(d["consegne"]), 3)
 
-    def test_modifica_permessi_effettiva_al_login_successivo(self):
+    def test_modifica_permessi_chiude_le_sessioni_del_tipo(self):
         w = self.world()
         self.assertEqual(self.call("POST", "/api/consegne", {"nome": "x"}, w["r1"])[0], 403)
+        # rinominare senza toccare i permessi non chiude le sessioni
+        self.assertEqual(self.call("PUT", f"/api/tipi-account/{w['reader']}", {"nome": "Lettore 2"}, w["sa"])[0], 200)
+        self.assertEqual(self.call("GET", "/api/consegne", token=w["r1"])[0], 200)
+        # cambiando i permessi gli utenti di quel tipo devono rifare il login, gli altri no
         code, _ = self.call("PUT", f"/api/tipi-account/{w['reader']}",
                             {"permessi": ["consegne.leggi", "consegne.scrivi"]}, w["sa"])
         self.assertEqual(code, 200)
-        # sessione attiva non toccata, nuovo login con i nuovi permessi
-        self.assertEqual(self.call("POST", "/api/consegne", {"nome": "x"}, w["r1"])[0], 403)
+        self.assertEqual(self.call("GET", "/api/consegne", token=w["r1"])[0], 401)
+        self.assertEqual(self.call("GET", "/api/consegne", token=w["a1"])[0], 200)
         t = self.token("r1", "r1pw")
         self.assertEqual(self.call("POST", "/api/consegne", {"nome": "x"}, t)[0], 201)
+
+    def test_revoca_permessi_immediata(self):
+        w = self.world()
+        self.assertEqual(self.call("POST", "/api/consegne", {"nome": "x"}, w["a1"])[0], 201)
+        ridotti = [p for p in OPS if p != "consegne.scrivi"]
+        self.assertEqual(self.call("PUT", f"/api/tipi-account/{w['full']}", {"permessi": ridotti}, w["sa"])[0], 200)
+        self.assertEqual(self.call("POST", "/api/consegne", {"nome": "x"}, w["a1"])[0], 401)
+        t = self.token("a1", "a1pw")
+        self.assertEqual(self.call("POST", "/api/consegne", {"nome": "x"}, t)[0], 403)
+
+    def test_durata_massima_della_sessione(self):
+        w = self.world()
+        with srv.sessions_lock:
+            srv.sessions[w["a1"]]["created"] = srv.time.time() - srv.SESSION_MAX_AGE - 1
+        # anche con attività recente la sessione non vive oltre il limite assoluto
+        self.assertEqual(self.call("GET", "/api/consegne", token=w["a1"])[0], 401)
+        self.assertEqual(self.call("GET", "/api/consegne", token=w["a2"])[0], 200)
+
+    def test_limite_tentativi_di_login(self):
+        self.world()
+        for _ in range(srv.LOGIN_MAX_FAIL_USER):
+            self.assertEqual(self.login("a1", "sbagliata")[0], 401)
+        # l'utente è bloccato anche con la password giusta; gli altri utenti no
+        code, d = self.login("a1", "a1pw")
+        self.assertEqual(code, 429, d)
+        self.assertEqual(self.login("a2", "a2pw")[0], 200)
+        # username in maiuscolo: stessa chiave
+        self.assertEqual(self.login("A1", "a1pw")[0], 429)
+        # scaduta la finestra si può riprovare
+        with srv.fails_lock:
+            srv.fails[srv._user_key("a1")] = [srv.time.time() - srv.LOGIN_WINDOW - 1] * srv.LOGIN_MAX_FAIL_USER
+        self.assertEqual(self.login("a1", "a1pw")[0], 200)
+        # un login riuscito azzera il contatore
+        for _ in range(srv.LOGIN_MAX_FAIL_USER - 1):
+            self.login("a1", "x")
+        self.assertEqual(self.login("a1", "a1pw")[0], 200)
+        with srv.fails_lock:
+            self.assertNotIn(srv._user_key("a1"), srv.fails)
+
+    def test_limite_tentativi_per_ip_con_utenti_inesistenti(self):
+        self.world()
+        with srv.fails_lock:
+            srv.fails.clear()
+        for i in range(srv.LOGIN_MAX_FAIL_IP):
+            self.assertEqual(self.login(f"fantasma{i}", "x")[0], 401)
+        self.assertEqual(self.login("a1", "a1pw")[0], 429)     # l'IP è bloccato per tutti
+
+    def test_cambio_password_con_password_errata_e_limitato(self):
+        w = self.world()
+        for _ in range(srv.LOGIN_MAX_FAIL_USER):
+            self.assertEqual(self.change_password(w["a1"], "sbagliata", "nuova123")[0], 401)
+        self.assertEqual(self.change_password(w["a1"], "a1pw", "nuova123")[0], 429)
+
+    def test_challenge_per_ip_limitati(self):
+        for _ in range(srv.CHALLENGE_MAX_IP):
+            self.assertEqual(self.call("GET", "/api/auth/challenge")[0], 200)
+        self.assertEqual(self.call("GET", "/api/auth/challenge")[0], 429)
+        with srv.challenges_lock:       # scaduti, tornano disponibili
+            for c in list(srv.challenges):
+                srv.challenges[c] = (0, srv.challenges[c][1])
+        self.assertEqual(self.call("GET", "/api/auth/challenge")[0], 200)
 
 
 class TestNegoziTipi(Base):

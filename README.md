@@ -39,7 +39,7 @@ Sistema completo per la gestione di consegne e installazioni, progettato per tea
 - Il **superadmin** è un account puramente amministrativo: gestisce **negozi**, **tipi account** e **utenti**, ma **non ha accesso ai dati operativi** (consegne, giornate, squadre).
 - I **tipi account** sono creati dal superadmin, sono globali (condivisi da tutti i negozi) e contengono un insieme di permessi. Un utente ha un tipo account e un negozio.
 - Un utente senza tipo account assegnato non può accedere.
-- Modificare i permessi di un tipo account ha effetto al login successivo degli utenti; cambiare il tipo account di un utente ha effetto immediato (sessioni invalidate).
+- Modificare i permessi di un tipo account o cambiare il tipo account di un utente ha effetto immediato: le sessioni interessate vengono chiuse e gli utenti devono rifare il login. Una sessione dura al massimo 12 ore.
 
 | Gruppo | Permessi assegnabili |
 |--------|----------------------|
@@ -386,7 +386,7 @@ Categorie: `[AUTH]`, `[UTENTI]`, `[DATI]`, `[NEGOZI]`, `[TIPI_ACCOUNT]`. In Dock
 - Healthcheck attivo su `/api/ping`
 - 🚧 **V2:** autenticazione obbligatoria, permessi per tipo account, isolamento dei dati per negozio, log degli accessi (vedi sezioni dedicate sopra)
 - 🚧 **V2:** timeout di 15 s sui socket e limite di 2 MB alle richieste; chi gestisce gli utenti non può assegnare o toccare permessi che non possiede
-- 🚧 **V2:** limiti noti (HTTP puro, nessun rate limiting sul login, revoca dei permessi solo al login successivo): elenco completo nell'audit di sicurezza in `AGENTS.md` §5
+- 🚧 **V2:** tentativi di accesso limitati (20 falliti per IP e 10 per username in 5 minuti, poi 429) e sessioni chiuse alla revoca dei permessi; limiti noti (HTTP puro, ecc.): elenco completo nell'audit di sicurezza in `AGENTS.md` §5
 - 🚧 **V2:** istanza applicativa unica (sessioni in memoria): un riavvio del container disconnette gli utenti
 
 ## 🔧 Linee guida per sviluppatori

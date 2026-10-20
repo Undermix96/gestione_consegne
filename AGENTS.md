@@ -242,6 +242,7 @@ PORT     = int(os.environ.get("PORT", 8080))
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # 🚧 V2
 SESSION_TTL   = 7200   # 2 ore di inattività
+SESSION_MAX_AGE = 43200  # 12 ore: durata massima assoluta della sessione (SEC-07)
 CHALLENGE_TTL = 60     # secondi
 ```
 
@@ -389,7 +390,7 @@ sessions = {
 }
 ```
 
-I permessi vengono copiati nella sessione al login. Modifiche ai permessi di un tipo account hanno effetto al login successivo (sessioni attive non invalidate). **Eccezione:** cambio tipo account invalida immediatamente le sessioni dell'utente.
+I permessi vengono copiati nella sessione al login. Se i permessi di un tipo account cambiano, le sessioni di tutti i suoi utenti vengono chiuse subito (devono rifare il login: SEC-07); rinominare il tipo non le tocca. Anche il **cambio tipo account** di un utente invalida immediatamente le sessioni dell'utente.
 
 ### Utente senza tipo account
 Un utente con `tipo_account_id: null` viene bloccato al login con messaggio "Account non configurato. Contatta l'amministratore." (escluso superadmin).
@@ -399,7 +400,7 @@ Un utente con `tipo_account_id: null` viene bloccato al login con messaggio "Acc
 - Utente con `tipo_account_id: null` non può fare login (escluso superadmin)
 - Tipo account non eliminabile se ha utenti associati
 - Negozio non eliminabile se ha utenti associati
-- Modifica dei permessi di un tipo account: effettiva al login successivo (sessioni attive non invalidate)
+- Modifica dei permessi di un tipo account: invalida subito le sessioni dei suoi utenti (SEC-07); la sessione dura al massimo `SESSION_MAX_AGE` (12 ore) anche con attività continua
 - Cambio del tipo account di un utente: invalida immediatamente le sessioni di quell'utente
 - Superadmin riceve 403 su tutti gli endpoint operativi (`/api/consegne`, `/api/giornate`, `/api/squadre`, `/api/stato`)
 - Il server filtra sempre per `negozio_id` su tutti gli endpoint operativi
@@ -407,6 +408,7 @@ Un utente con `tipo_account_id: null` viene bloccato al login con messaggio "Acc
 - **Nessuna escalation di privilegi (SEC-02):** chi non è superadmin può creare un utente o cambiargli il tipo solo con un tipo i cui permessi sono contenuti nei propri, e può reimpostare la password, cambiare il tipo o eliminare solo utenti i cui permessi attuali sono contenuti nei propri (403 altrimenti). Funzione `check_not_escalating()` in `server.py`, usata da `h_create_utente`, `h_set_tipo` e `target_user()`
 - **Validazione delle consegne (SEC-03):** i campi noti sono testi ≤ 2000 caratteri; `articoli` è una lista di ≤ 50 oggetti con solo `tipoConsegna` (valore dell'elenco), `tipo`, `codice`, `desc`; i campi sconosciuti restano ammessi (conservati come `extra`) ma al massimo 20 per richiesta e ≤ 2000 caratteri ciascuno
 - **Header di sicurezza (SEC-04):** ogni risposta porta CSP (`default-src 'self'`, `frame-ancestors 'none'`, `unsafe-inline` solo per gli script/stili inline di `index.html`), `X-Frame-Options: DENY`, `nosniff`, `Referrer-Policy: no-referrer`. Non caricare risorse esterne dal frontend
+- **Challenge per IP (SEC-06):** al massimo 50 challenge vivi per IP (429 oltre), così un solo client non può esaurire i 1000 totali e bloccare i login degli altri
 - **Limiti del socket (SEC-01):** `Handler.timeout = 15` s (connessioni mute o inviate a pezzi vengono chiuse); `Content-Length` negativo o non numerico → 400, oltre `MAX_BODY` → 413
 - Gli errori di concorrenza (`versione` non coincidente) rispondono **409 Conflict**; token mancante/scaduto **401**; permesso o negozio non coerente **403**
 
@@ -460,7 +462,7 @@ Le richieste dell'healthcheck Docker interno (`127.0.0.1`/`::1`, nessun header `
 ### Limiti noti della sicurezza V2 🚧
 - **Hash memorizzato = credenziale equivalente.** Nel Challenge-Response il server deve conoscere `sha256(password)` per calcolare la risposta attesa; chi leggesse quel valore dal DB/volume potrebbe autenticarsi senza conoscere la password. Il DB non è esposto sull'host e il volume `/data` è raggiungibile solo da chi amministra l'host Docker; il rischio è accettato per poter proteggere le credenziali su HTTP senza `crypto.subtle`. Da non cambiare senza una decisione esplicita.
 - **Password di default del superadmin (`admin`) finché non viene cambiata al primo accesso:** chiunque sulla LAN che la conosca potrebbe entrare nel pannello admin. Cambiarla subito dopo il primo avvio.
-- **Rate limiting dei tentativi di login:** non previsto in questa versione (i tentativi falliti sono solo loggati). Vedi SEC-06 nell'audit sotto.
+- **Rate limiting dei tentativi di login (SEC-06):** per IP (20 fallimenti in 5 minuti) e per username (10 in 5 minuti, senza distinzione di maiuscole) → 429, anche con la password giusta finché la finestra non scade; vale anche per il cambio password con password attuale errata. Contatori in memoria (azzerati al riavvio); un login riuscito azzera quello dell'username. Conseguenza accettata: chi conosce un username può bloccarlo per 5 minuti (anche il superadmin). Dietro il NAT di Docker l'IP può essere quello del gateway, quindi la soglia per IP è larga
 - **Sessioni e challenge in memoria:** perse a ogni riavvio; incompatibili con più repliche (vedi §4).
 
 ### Audit di sicurezza (2026-10-20) — esito e stato 🚧
@@ -473,8 +475,8 @@ Revisione del codice di `v2-docker` (server, storage, frontend, Docker). Non son
 | SEC-03 | Media | `articoli` e `tipoConsegna` non validati: un dato malformato (`[null]`, `"constructor"`) rompe il rendering per tutto il negozio; nessun limite ai campi extra | ✅ corretto (server: struttura di `articoli`, `tipoConsegna`, testo ≤ 2000 caratteri, max 20 campi extra; client: `Object.hasOwn` in `tipoBadge`/`statoPill`) |
 | SEC-04 | Media | Mancano gli header di sicurezza (CSP, `X-Frame-Options`, `nosniff`, `Referrer-Policy`); `css/layout.css` importa i font da Google (contrario al vincolo "nessuna dipendenza esterna") | ✅ corretto (header in `Handler.end_headers`, `@import` rimosso: font di sistema) |
 | SEC-05 | Media | Credenziali su HTTP: `password_hash` e `nuova_hash` viaggiano in chiaro, SHA-256 senza salt (attacco a dizionario sul challenge osservato), token in chiaro; la lunghezza minima della password è solo lato client | accettato (vincolo HTTP, vedi "Limiti noti"); valutare HTTPS o KDF |
-| SEC-06 | Media | Nessun rate limiting su login e `/api/auth/challenge` (1000 challenge vive bloccano i login con 503); password iniziale `admin` | 🔲 aperto |
-| SEC-07 | Media | La revoca di permessi di un tipo account non vale per le sessioni attive (scadenza scorrevole, nessun limite assoluto) | 🔲 aperto |
+| SEC-06 | Media | Nessun rate limiting su login e `/api/auth/challenge` (1000 challenge vive bloccano i login con 503); password iniziale `admin` | ✅ corretto (limiti per IP e username, challenge per IP; la password iniziale `admin` resta fino al primo accesso) |
+| SEC-07 | Media | La revoca di permessi di un tipo account non vale per le sessioni attive (scadenza scorrevole, nessun limite assoluto) | ✅ corretto (sessioni chiuse al cambio dei permessi del tipo, durata massima 12 ore) |
 | SEC-08 | Bassa | Log injection (username e campi consegna nei log senza sanificazione); `X-Client-ID` arbitrario sul `/api/ping` pubblico | 🔲 aperto |
 | SEC-09 | Bassa | Handler inline `onclick="f('${escHtml(id)}')"`: l'entità `&#39;` torna `'` prima del JS; non sfruttabile finché gli id sono generati dal server | 🔲 latente |
 | SEC-10 | Bassa | Race minori: assegnazione consegne non atomica, eliminazione giornata concorrente con assegnazione, nome squadra duplicato, `stato: completata` via `PUT` senza `giornate.segna_completata`, testo degli errori di validazione al client | 🔲 aperto |

@@ -29,9 +29,16 @@ PORT     = int(os.environ.get("PORT", 8080))
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 SESSION_TTL     = 7200   # 2 ore di inattività
+SESSION_MAX_AGE = 43200  # 12 ore: durata massima assoluta, anche con attività continua (SEC-07)
 CHALLENGE_TTL   = 60     # secondi
 MAX_CHALLENGES  = 1000   # challenge contemporanei (protezione della memoria)
 MAX_BODY        = 2 * 1024 * 1024
+# Limiti sui tentativi di accesso (SEC-06). Contatori in memoria, come sessioni e challenge.
+LOGIN_WINDOW        = 300    # finestra in secondi
+LOGIN_MAX_FAIL_IP   = 20     # fallimenti per IP nella finestra (in Docker l'IP può essere quello del gateway: soglia larga)
+LOGIN_MAX_FAIL_USER = 10     # fallimenti per username nella finestra
+CHALLENGE_MAX_IP    = 50     # challenge vivi per IP
+MAX_TRACKED         = 10000  # chiavi tracciate al massimo (protezione della memoria)
 HEALTHCHECK_IPS = {"127.0.0.1", "::1"}
 
 SUPERADMIN_ID = "u_superadmin"
@@ -178,28 +185,70 @@ challenges = {}   # challenge -> timestamp
 sessions_lock = threading.Lock()
 sessions = {}     # token -> dict sessione
 
-def new_challenge():
+def new_challenge(ip=None):
     now = time.time()
     with challenges_lock:
+        # un solo IP non può occupare tutti i challenge (altrimenti nessun altro potrebbe fare il login)
+        propri = sum(1 for ts, cip in challenges.values() if cip == ip and now - ts <= CHALLENGE_TTL)
+        if propri >= CHALLENGE_MAX_IP:
+            raise HttpError(429, "Troppe richieste, riprova tra qualche secondo")
         if len(challenges) >= MAX_CHALLENGES:
-            for c in [c for c, ts in challenges.items() if now - ts > CHALLENGE_TTL]:
+            for c in [c for c, (ts, _) in challenges.items() if now - ts > CHALLENGE_TTL]:
                 del challenges[c]
             if len(challenges) >= MAX_CHALLENGES:
                 raise HttpError(503, "Server occupato, riprova tra qualche secondo")
         ch = secrets.token_hex(32)
-        challenges[ch] = now
+        challenges[ch] = (now, ip)
         return ch
 
 def consume_challenge(ch):
     with challenges_lock:
-        ts = challenges.pop(ch, None)
-    return ts is not None and (time.time() - ts) < CHALLENGE_TTL
+        entry = challenges.pop(ch, None)
+    return entry is not None and (time.time() - entry[0]) < CHALLENGE_TTL
+
+# ─── LIMITE DEI TENTATIVI DI ACCESSO (in memoria) ────────────────────────────
+
+fails_lock = threading.Lock()
+fails = {}   # ("ip", ip) | ("user", username in minuscolo) -> [istanti dei fallimenti]
+
+def _user_key(username):
+    return ("user", str(username).strip().casefold()[:150])
+
+def _recent_fails(key, now):
+    lst = [t for t in fails.get(key, ()) if now - t < LOGIN_WINDOW]
+    if lst:
+        fails[key] = lst
+    else:
+        fails.pop(key, None)
+    return lst
+
+def check_login_allowed(ip, user_key):
+    """429 se da questo IP o su questo username ci sono stati troppi fallimenti di recente."""
+    now = time.time()
+    with fails_lock:
+        if len(_recent_fails(("ip", ip), now)) >= LOGIN_MAX_FAIL_IP or \
+                len(_recent_fails(user_key, now)) >= LOGIN_MAX_FAIL_USER:
+            raise HttpError(429, "Troppi tentativi di accesso falliti: riprova tra qualche minuto")
+
+def record_login_failure(ip, user_key):
+    now = time.time()
+    with fails_lock:
+        if len(fails) >= MAX_TRACKED:
+            for k in list(fails):
+                _recent_fails(k, now)
+        fails.setdefault(("ip", ip), []).append(now)
+        if user_key in fails or len(fails) < MAX_TRACKED:     # a memoria piena l'IP resta comunque tracciato
+            fails.setdefault(user_key, []).append(now)
+
+def clear_login_failures(user_key):
+    with fails_lock:
+        fails.pop(user_key, None)
 
 def new_session(user, permessi):
     token = secrets.token_urlsafe(32)
     now = time.time()
     with sessions_lock:
-        for t in [t for t, s in sessions.items() if now > s["expires"]]:
+        for t in [t for t, s in sessions.items() if now > s["expires"] or now > s["created"] + SESSION_MAX_AGE]:
             del sessions[t]
         sessions[token] = {
             "user_id":              user["id"],
@@ -207,6 +256,7 @@ def new_session(user, permessi):
             "negozio_id":           user.get("negozio_id"),
             "permessi":             permessi,
             "is_superadmin":        bool(user.get("is_superadmin")),
+            "created":              now,
             "last_seen":            now,
             "expires":              now + SESSION_TTL,
             "must_change_password": bool(user.get("primo_login")),
@@ -224,7 +274,7 @@ def get_session(token, renew=True):
         if s is None:
             return None
         now = time.time()
-        if now > s["expires"]:
+        if now > s["expires"] or now > s["created"] + SESSION_MAX_AGE:
             del sessions[token]
             return None
         if renew:
@@ -380,7 +430,7 @@ def label_consegna(c):
 
 @route("GET", "/api/auth/challenge", PUBLIC)
 def h_challenge(ctx):
-    return 200, {"challenge": new_challenge()}
+    return 200, {"challenge": new_challenge(ctx.ip)}
 
 @route("GET", "/api/ping", PUBLIC)
 def h_ping(ctx):
@@ -398,6 +448,12 @@ def h_login(ctx):
     if not all(isinstance(x, str) and x for x in (username, ch, response)):
         raise HttpError(400, "Dati mancanti")
     username = username.strip()
+    ukey = _user_key(username)
+    try:
+        check_login_allowed(ctx.ip, ukey)
+    except HttpError:
+        log(f"[AUTH] Login rifiutato (troppi tentativi falliti) per '{username}' da {ctx.ip}", "warning")
+        raise
     if not consume_challenge(ch):
         log(f"[AUTH] Challenge non valido per '{username}' da {ctx.ip}", "warning")
         raise HttpError(401, "Challenge non valido o scaduto")
@@ -406,11 +462,14 @@ def h_login(ctx):
     stored = user["password_hash"] if user else SUPERADMIN_DEFAULT_HASH
     ok = secrets.compare_digest(response.encode("utf-8"), sha256_hex(stored + ch).encode("utf-8"))
     if not user:
+        record_login_failure(ctx.ip, ukey)
         log(f"[AUTH] Login fallito — utente non trovato: '{username}' da {ctx.ip}", "warning")
         raise HttpError(401, "Credenziali non valide")
     if not ok:
+        record_login_failure(ctx.ip, ukey)
         log(f"[AUTH] Login fallito — password errata per '{username}' da {ctx.ip}", "warning")
         raise HttpError(401, "Credenziali non valide")
+    clear_login_failures(ukey)
     if not user.get("is_superadmin") and not (user.get("tipo_account_id") and user.get("negozio_id")):
         log(f"[AUTH] Login bloccato — account non configurato: '{username}' da {ctx.ip}", "warning")
         raise HttpError(403, "Account non configurato. Contatta l'amministratore.")
@@ -444,11 +503,14 @@ def h_change_password(ctx):
     if not all(isinstance(x, str) and x for x in (ch, response)):
         raise HttpError(400, "Dati mancanti")
     nuova = need_hash(b, "nuova_hash")
+    ukey = _user_key(ctx.username)
+    check_login_allowed(ctx.ip, ukey)
     if not consume_challenge(ch):
         raise HttpError(401, "Challenge non valido o scaduto")
     user = rec_or_404("utenti", ctx.session["user_id"], "Utente")
     stored = user["password_hash"]
     if not secrets.compare_digest(response.encode("utf-8"), sha256_hex(stored + ch).encode("utf-8")):
+        record_login_failure(ctx.ip, ukey)
         log(f"[AUTH] Cambio password fallito (password errata) per '{ctx.username}' da {ctx.ip}", "warning")
         raise HttpError(401, "Password attuale non corretta")
     if nuova == stored:
@@ -562,6 +624,13 @@ def h_update_tipo(ctx, tid):
         storage.update_record("tipi_account", tid, changes)
     except DuplicateError:
         raise HttpError(409, f"Esiste già un tipo account '{changes['nome']}'")
+    if set(changes.get("permessi", tipo.get("permessi", []))) != set(tipo.get("permessi", [])):
+        # i permessi sono copiati nella sessione al login: senza questo una revoca non varrebbe per chi
+        # è già connesso (la scadenza scorre a ogni richiesta). Gli utenti del tipo devono rifare il login.
+        utenti = storage.list_records("utenti", {"tipo_account_id": tid})
+        for u in utenti:
+            invalidate_user_sessions(u["id"])
+        log(f"[TIPI_ACCOUNT] Permessi di '{tipo['nome']}' cambiati: sessioni chiuse per {len(utenti)} utenti")
     log(f"[TIPI_ACCOUNT] Tipo '{tipo['nome']}' modificato da '{ctx.username}'")
     return 200, {"ok": True}
 
