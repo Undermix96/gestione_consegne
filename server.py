@@ -9,6 +9,7 @@ Gestione Consegne — Server V2 (Docker)
 
 import hashlib
 import http.server
+import ipaddress
 import json
 import logging
 import os
@@ -35,10 +36,43 @@ MAX_CHALLENGES  = 1000   # challenge contemporanei (protezione della memoria)
 MAX_BODY        = 2 * 1024 * 1024
 # Limiti sui tentativi di accesso (SEC-06). Contatori in memoria, come sessioni e challenge.
 LOGIN_WINDOW        = 300    # finestra in secondi
-LOGIN_MAX_FAIL_IP   = 20     # fallimenti per IP nella finestra (in Docker l'IP può essere quello del gateway: soglia larga)
 LOGIN_MAX_FAIL_USER = 10     # fallimenti per username nella finestra
-CHALLENGE_MAX_IP    = 50     # challenge vivi per IP
 MAX_TRACKED         = 10000  # chiavi tracciate al massimo (protezione della memoria)
+# Rallentamento globale delle risposte di errore (contro lo spray di password: una password su molti username,
+# che i limiti per username non fermano). Non blocca nessuno: oltre la soglia ogni errore di login risponde
+# con un ritardo crescente. Vale per tutti i client insieme, quindi non dipende dall'IP.
+LOGIN_DELAY_WINDOW    = 60     # secondi
+LOGIN_DELAY_THRESHOLD = 10     # fallimenti (di tutti) nella finestra oltre i quali scatta il ritardo
+LOGIN_DELAY_STEP      = 0.25   # secondi di ritardo per ogni fallimento oltre la soglia
+LOGIN_DELAY_MAX       = 3.0
+
+def _env_int(name, default):
+    """Intero da variabile d'ambiente; vuota o non valida → default (compose passa le variabili vuote)."""
+    try:
+        return max(0, int(os.environ.get(name, "").strip()))
+    except ValueError:
+        return default
+
+# Limiti per IP: 0 li disattiva. Se il server vede sempre lo stesso IP (NAT, Docker Desktop, alcuni NAS) tutti i
+# client condividono questi contatori: alzare le soglie, o disattivarle e restare con i limiti per username,
+# oppure indicare il reverse proxy in TRUSTED_PROXIES per usare l'IP reale dei client.
+LOGIN_MAX_FAIL_IP = _env_int("LOGIN_MAX_FAIL_IP", 20)   # fallimenti per IP nella finestra
+CHALLENGE_MAX_IP  = _env_int("CHALLENGE_MAX_IP", 50)    # challenge vivi per IP
+
+def parse_trusted_proxies(value):
+    """Elenco di IP o reti (CIDR) separati da virgola → lista di ip_network. Voci non valide ignorate."""
+    nets = []
+    for part in (value or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            nets.append(ipaddress.ip_network(part, strict=False))
+        except ValueError:
+            logging.getLogger().warning("TRUSTED_PROXIES: voce non valida ignorata: %r", part)
+    return nets
+
+TRUSTED_PROXIES = parse_trusted_proxies(os.environ.get("TRUSTED_PROXIES", ""))
 HEALTHCHECK_IPS = {"127.0.0.1", "::1"}
 
 SUPERADMIN_ID = "u_superadmin"
@@ -185,18 +219,44 @@ challenges = {}   # challenge -> timestamp
 sessions_lock = threading.Lock()
 sessions = {}     # token -> dict sessione
 
+def _trusted(addr):
+    try:
+        a = ipaddress.ip_address(addr)
+    except ValueError:
+        return False
+    return any(a in n for n in TRUSTED_PROXIES if n.version == a.version)
+
+def client_ip(peer, forwarded):
+    """IP del client. Se la connessione arriva da un proxy fidato (TRUSTED_PROXIES) si usa X-Forwarded-For,
+    letto da destra verso sinistra: il primo indirizzo non fidato è quello che il proxy ha visto davvero,
+    quelli più a sinistra li può scrivere il client e non contano. Senza proxy fidati l'header è ignorato."""
+    if not TRUSTED_PROXIES or not _trusted(peer) or not forwarded:
+        return peer
+    for part in reversed([p.strip() for p in forwarded.split(",")]):
+        try:
+            addr = ipaddress.ip_address(part)
+        except ValueError:
+            return peer                      # header malformato: non ci si fida
+        if not _trusted(str(addr)):
+            return str(addr)
+    return peer
+
 def new_challenge(ip=None):
     now = time.time()
     with challenges_lock:
         # un solo IP non può occupare tutti i challenge (altrimenti nessun altro potrebbe fare il login)
-        propri = sum(1 for ts, cip in challenges.values() if cip == ip and now - ts <= CHALLENGE_TTL)
-        if propri >= CHALLENGE_MAX_IP:
-            raise HttpError(429, "Troppe richieste, riprova tra qualche secondo")
+        if CHALLENGE_MAX_IP > 0:
+            propri = sum(1 for ts, cip in challenges.values() if cip == ip and now - ts <= CHALLENGE_TTL)
+            if propri >= CHALLENGE_MAX_IP:
+                raise HttpError(429, "Troppe richieste, riprova tra qualche secondo")
         if len(challenges) >= MAX_CHALLENGES:
             for c in [c for c, (ts, _) in challenges.items() if now - ts > CHALLENGE_TTL]:
                 del challenges[c]
-            if len(challenges) >= MAX_CHALLENGES:
-                raise HttpError(503, "Server occupato, riprova tra qualche secondo")
+            while len(challenges) >= MAX_CHALLENGES:
+                # pieno di challenge ancora validi: si scarta il più vecchio invece di rifiutare chi arriva.
+                # Chi inonda il server non può così bloccare i login (servirebbero migliaia di richieste
+                # nel breve tempo che passa tra challenge e login di un utente vero).
+                del challenges[next(iter(challenges))]
         ch = secrets.token_hex(32)
         challenges[ch] = (now, ip)
         return ch
@@ -210,6 +270,8 @@ def consume_challenge(ch):
 
 fails_lock = threading.Lock()
 fails = {}   # ("ip", ip) | ("user", username in minuscolo) -> [istanti dei fallimenti]
+all_fails = []   # istanti dei fallimenti di tutti, per il rallentamento globale
+_sleep = time.sleep   # sostituibile nei test
 
 def _user_key(username):
     return ("user", str(username).strip().casefold()[:150])
@@ -226,19 +288,26 @@ def check_login_allowed(ip, user_key):
     """429 se da questo IP o su questo username ci sono stati troppi fallimenti di recente."""
     now = time.time()
     with fails_lock:
-        if len(_recent_fails(("ip", ip), now)) >= LOGIN_MAX_FAIL_IP or \
+        if (LOGIN_MAX_FAIL_IP > 0 and len(_recent_fails(("ip", ip), now)) >= LOGIN_MAX_FAIL_IP) or \
                 len(_recent_fails(user_key, now)) >= LOGIN_MAX_FAIL_USER:
             raise HttpError(429, "Troppi tentativi di accesso falliti: riprova tra qualche minuto")
 
 def record_login_failure(ip, user_key):
+    """Registra un fallimento e, se in questo momento ce ne sono troppi in giro (da chiunque), fa attendere
+    la risposta di errore: un ritardo crescente rende inutile lo spray di password senza bloccare nessuno."""
     now = time.time()
     with fails_lock:
+        all_fails[:] = [t for t in all_fails if now - t < LOGIN_DELAY_WINDOW]
+        all_fails.append(now)
+        eccesso = len(all_fails) - LOGIN_DELAY_THRESHOLD
         if len(fails) >= MAX_TRACKED:
             for k in list(fails):
                 _recent_fails(k, now)
         fails.setdefault(("ip", ip), []).append(now)
         if user_key in fails or len(fails) < MAX_TRACKED:     # a memoria piena l'IP resta comunque tracciato
             fails.setdefault(user_key, []).append(now)
+    if eccesso > 0 and LOGIN_DELAY_STEP > 0:
+        _sleep(min(LOGIN_DELAY_MAX, eccesso * LOGIN_DELAY_STEP))     # fuori dal lock
 
 def clear_login_failures(user_key):
     with fails_lock:
@@ -352,7 +421,7 @@ class Ctx:
         self.token = token
         self.session = session
         self.params = params
-        self.ip = handler.client_address[0]
+        self.ip = client_ip(handler.client_address[0], ", ".join(handler.headers.get_all("X-Forwarded-For") or []))
         self._body = None
 
     @property

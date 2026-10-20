@@ -75,13 +75,21 @@ class Base(unittest.TestCase):
             srv.challenges.clear()
         with srv.fails_lock:
             srv.fails.clear()
+            srv.all_fails.clear()
+        self.slept = []
+        srv._sleep = self.slept.append          # i ritardi non si aspettano davvero: si registrano
+        self._salvati = (srv.LOGIN_MAX_FAIL_IP, srv.CHALLENGE_MAX_IP, srv.TRUSTED_PROXIES)
         with srv.timestamps_lock:
             srv.timestamps.clear()
 
+    def tearDown(self):
+        srv.LOGIN_MAX_FAIL_IP, srv.CHALLENGE_MAX_IP, srv.TRUSTED_PROXIES = self._salvati
+        srv._sleep = srv.time.sleep
+
     # ── client HTTP ──
-    def call(self, method, path, body=None, token=None, raw=None):
+    def call(self, method, path, body=None, token=None, raw=None, headers=None):
         c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=30)
-        headers = {}
+        headers = dict(headers or {})
         data = None
         if body is not None:
             data = json.dumps(body).encode()
@@ -399,6 +407,91 @@ class TestPermessi(Base):
         for i in range(srv.LOGIN_MAX_FAIL_IP):
             self.assertEqual(self.login(f"fantasma{i}", "x")[0], 401)
         self.assertEqual(self.login("a1", "a1pw")[0], 429)     # l'IP è bloccato per tutti
+
+    def test_limiti_per_ip_disattivabili(self):
+        # dietro un NAT tutti i client hanno lo stesso IP: con 0 restano solo i limiti per username
+        srv.LOGIN_MAX_FAIL_IP = 0
+        srv.CHALLENGE_MAX_IP = 0
+        self.world()
+        for i in range(srv.LOGIN_MAX_FAIL_IP + 40):
+            self.assertEqual(self.login(f"fantasma{i}", "x")[0], 401)
+        self.assertEqual(self.login("a1", "a1pw")[0], 200)
+        for _ in range(60):
+            self.assertEqual(self.call("GET", "/api/auth/challenge")[0], 200)
+        for _ in range(srv.LOGIN_MAX_FAIL_USER):
+            self.login("a2", "sbagliata")
+        self.assertEqual(self.login("a2", "a2pw")[0], 429)          # il limite per username resta
+
+    def test_env_int(self):
+        os.environ["PROVA_X"] = ""
+        self.assertEqual(srv._env_int("PROVA_X", 7), 7)
+        os.environ["PROVA_X"] = "abc"
+        self.assertEqual(srv._env_int("PROVA_X", 7), 7)
+        os.environ["PROVA_X"] = "0"
+        self.assertEqual(srv._env_int("PROVA_X", 7), 0)
+        os.environ["PROVA_X"] = "-3"
+        self.assertEqual(srv._env_int("PROVA_X", 7), 0)
+        del os.environ["PROVA_X"]
+        self.assertEqual(srv._env_int("PROVA_X", 7), 7)
+
+    def test_ip_reale_solo_da_proxy_fidato(self):
+        self.world()
+        xff = {"X-Forwarded-For": "6.6.6.6, 9.9.9.9"}
+        # nessun proxy fidato: l'header è ignorato (altrimenti basterebbe falsificarlo per aggirare i limiti)
+        self.call("POST", "/api/auth/login", {"username": "zz"}, headers=xff)   # dati mancanti: nessun fallimento
+        self.login("a1", "x")
+        with srv.fails_lock:
+            self.assertIn(("ip", "127.0.0.1"), srv.fails)
+            srv.fails.clear()
+        # proxy fidato: vale l'ultimo indirizzo non fidato, non quello scritto dal client
+        srv.TRUSTED_PROXIES = srv.parse_trusted_proxies("127.0.0.1, 10.0.0.0/8, non-valido")
+        self.assertEqual(len(srv.TRUSTED_PROXIES), 2)
+        _, ch = self.call("GET", "/api/auth/challenge")
+        resp = hashlib.sha256((h1("x") + ch["challenge"]).encode()).hexdigest()
+        self.call("POST", "/api/auth/login", {"username": "a1", "challenge": ch["challenge"], "response": resp},
+                  headers={"X-Forwarded-For": "6.6.6.6, 9.9.9.9, 10.1.2.3"})
+        with srv.fails_lock:
+            self.assertIn(("ip", "9.9.9.9"), srv.fails)
+            self.assertNotIn(("ip", "6.6.6.6"), srv.fails)
+
+    def test_client_ip_casi_limite(self):
+        srv.TRUSTED_PROXIES = srv.parse_trusted_proxies("172.18.0.0/16,::1")
+        self.assertEqual(srv.client_ip("172.18.0.2", "1.2.3.4"), "1.2.3.4")
+        self.assertEqual(srv.client_ip("172.18.0.2", "1.2.3.4, 172.18.0.5"), "1.2.3.4")
+        self.assertEqual(srv.client_ip("172.18.0.2", "1.2.3.4, spazzatura"), "172.18.0.2")   # malformato
+        self.assertEqual(srv.client_ip("172.18.0.2", ""), "172.18.0.2")
+        self.assertEqual(srv.client_ip("172.18.0.2", "172.18.0.9"), "172.18.0.2")            # tutti fidati
+        self.assertEqual(srv.client_ip("8.8.8.8", "1.2.3.4"), "8.8.8.8")                      # peer non fidato
+        self.assertEqual(srv.client_ip("::1", "2001:db8::1"), "2001:db8::1")                  # IPv6
+        self.assertEqual(srv.client_ip("nonip", "1.2.3.4"), "nonip")
+
+    def test_ritardo_globale_contro_lo_spray_di_password(self):
+        srv.LOGIN_MAX_FAIL_IP = 0
+        self.world()
+        # ogni username sbaglia una volta sola: nessun limite per username scatta, ma il ritardo sì
+        for i in range(srv.LOGIN_DELAY_THRESHOLD):
+            self.assertEqual(self.login(f"u{i}", "x")[0], 401)
+        self.assertEqual(self.slept, [])                         # sotto la soglia nessun ritardo
+        for i in range(4):
+            self.assertEqual(self.login(f"v{i}", "x")[0], 401)
+        self.assertEqual(self.slept, [srv.LOGIN_DELAY_STEP * k for k in (1, 2, 3, 4)])   # crescente
+        for i in range(40):
+            self.login(f"w{i}", "x")
+        self.assertEqual(max(self.slept), srv.LOGIN_DELAY_MAX)                            # con un tetto
+        # chi ha la password giusta non aspetta (e non è bloccato)
+        n = len(self.slept)
+        self.assertEqual(self.login("a1", "a1pw")[0], 200)
+        self.assertEqual(len(self.slept), n)
+
+    def test_challenge_pieni_scartano_il_piu_vecchio(self):
+        srv.CHALLENGE_MAX_IP = 0
+        vecchio = self.call("GET", "/api/auth/challenge")[1]["challenge"]
+        with srv.challenges_lock:
+            srv.challenges.update({f"x{i}": (srv.time.time(), "1.1.1.1") for i in range(srv.MAX_CHALLENGES - 1)})
+        self.assertEqual(self.call("GET", "/api/auth/challenge")[0], 200)     # non 503
+        with srv.challenges_lock:
+            self.assertLessEqual(len(srv.challenges), srv.MAX_CHALLENGES)
+            self.assertNotIn(vecchio, srv.challenges)
 
     def test_cambio_password_con_password_errata_e_limitato(self):
         w = self.world()

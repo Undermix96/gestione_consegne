@@ -62,7 +62,14 @@ Il sistema usa **Challenge-Response con SHA-256** per proteggere le credenziali 
 4. Il challenge è monouso e scade in 60 secondi, quindi una risposta intercettata non è riutilizzabile
 5. Le password sono memorizzate come `sha256(password)`
 
-> **Limiti noti:** chi accedesse al database o al volume dati potrebbe usare l'hash memorizzato per autenticarsi (è intrinseco a questo schema); non c'è un limite ai tentativi di login. Dettagli in `AGENTS.md`, §5.
+> **Limiti noti:** chi accedesse al database o al volume dati potrebbe usare l'hash memorizzato per autenticarsi (è intrinseco a questo schema); i tentativi di login sono limitati ma, se il server vede sempre lo stesso IP (NAT), vedi sotto. Dettagli in `AGENTS.md`, §5.
+
+### Tentativi di accesso e IP dei client (NAT)
+- Dopo 10 password errate sullo stesso username in 5 minuti (e dopo 20 dallo stesso IP) il server risponde 429 per qualche minuto.
+- Oltre 10 errori di login in un minuto, da chiunque, **tutte** le risposte di errore del login si fanno attendere sempre di più (fino a 3 secondi): rallenta chi prova una password su molti username, senza bloccare nessuno. Chi ha la password giusta non aspetta.
+- **Se il server vede sempre lo stesso IP** (Docker Desktop, alcuni NAS, NAT): i limiti per IP sarebbero condivisi da tutti i client. Si risolve in uno di due modi, da `.env`:
+  - `LOGIN_MAX_FAIL_IP=0` e `CHALLENGE_MAX_IP=0`: restano il limite per username e il rallentamento globale;
+  - se davanti all'app c'è un reverse proxy, `TRUSTED_PROXIES=<ip del proxy>`: i limiti usano l'IP reale del client letto da `X-Forwarded-For`. L'header è ignorato se la richiesta non arriva da un proxy elencato (altrimenti chiunque potrebbe falsificarlo).
 
 ### Primo accesso
 - Username: `superadmin` — Password: `admin`
@@ -314,6 +321,9 @@ In V2 i file `api.js`, `sync.js`, `store.js`, `render.js`, `giornate.js`, `squad
 | `LOG_LEVEL` | `INFO` | Livello di log: `DEBUG` (include ogni richiesta HTTP) \| `INFO` \| `WARNING` \| `ERROR` |
 | `BACKUP_INTERVAL` | `21600` | Secondi tra due backup automatici (6 ore), solo se ci sono state modifiche; `0` = nessun backup automatico |
 | `BACKUP_KEEP` | `30` | Quanti backup conservare (per tipo), con qualsiasi backend |
+| `LOGIN_MAX_FAIL_IP` | `20` | Tentativi di login falliti per IP in 5 minuti prima del blocco (429); `0` = limite per IP disattivato (restano quelli per username) |
+| `CHALLENGE_MAX_IP` | `50` | Challenge di login vivi per IP; `0` = nessun limite per IP |
+| `TRUSTED_PROXIES` | _(vuoto)_ | IP o reti (CIDR) dei reverse proxy fidati, separati da virgola: solo per le richieste che arrivano da lì si usa l'IP reale dei client (`X-Forwarded-For`) |
 | `DB_BACKEND` | `json` | Backend dati: `json` \| `mysql` \| `postgres` |
 | `DATA_DIR` | `/data` | Directory file JSON (ignorata per mysql/postgres) |
 | `DB_HOST` | `db` | Host del database |

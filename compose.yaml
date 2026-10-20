@@ -40,6 +40,10 @@ services:
       # Backup (vedi README): secondi tra due backup automatici (default 21600 = 6 ore, 0 = nessuno) e file conservati (30)
       BACKUP_INTERVAL: "${BACKUP_INTERVAL:-}"
       BACKUP_KEEP:     "${BACKUP_KEEP:-}"
+      # Limiti sui tentativi di accesso per IP (0 = disattivati) e reverse proxy fidati (vedi README)
+      LOGIN_MAX_FAIL_IP: "${LOGIN_MAX_FAIL_IP:-}"
+      CHALLENGE_MAX_IP:  "${CHALLENGE_MAX_IP:-}"
+      TRUSTED_PROXIES:   "${TRUSTED_PROXIES:-}"
     volumes:
       - app_data:/data          # dati (json) e cartella backup/ (tutti i backend)
     depends_on:
