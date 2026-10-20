@@ -256,6 +256,19 @@ class TestAuth(Base):
             srv.sessions[sa]["expires"] = 0
         self.assertEqual(self.call("GET", "/api/negozi", token=sa)[0], 401)
 
+    def test_ping_con_token_non_rinnova_e_segnala_la_scadenza(self):
+        sa = self.superadmin()
+        with srv.sessions_lock:
+            srv.sessions[sa]["expires"] = srv.time.time() + 100
+            prima = srv.sessions[sa]["expires"]
+        self.assertEqual(self.call("GET", "/api/ping", token=sa)[0], 200)
+        with srv.sessions_lock:
+            self.assertEqual(srv.sessions[sa]["expires"], prima)        # nessun rinnovo
+            srv.sessions[sa]["expires"] = 0
+        self.assertEqual(self.call("GET", "/api/ping", token=sa)[0], 401)
+        self.assertEqual(self.call("GET", "/api/ping", token="falso")[0], 401)
+        self.assertEqual(self.call("GET", "/api/ping")[0], 200)          # senza token (healthcheck)
+
     def test_utente_non_configurato_bloccato(self):
         sa = self.superadmin()
         nid = self.mk_negozio(sa, "N")
@@ -297,6 +310,21 @@ class TestPermessi(Base):
             "nome": "T", "permessi": ["consegne.leggi", "negozi.gestisci", "inventato", "consegne.leggi", 5]}, sa)
         self.assertEqual(code, 201)
         self.assertEqual(d["tipo"]["permessi"], ["consegne.leggi"])
+
+    def test_risposta_delle_scritture_solo_categorie_leggibili(self):
+        w = self.world()
+        t = self.mk_tipo(w["sa"], "Solo scrittura", ["consegne.scrivi", "giornate.crea"])
+        self.mk_utente(w["sa"], "s1", t, w["nA"])
+        tok = self.token("s1", "s1pw")
+        code, d = self.call("POST", "/api/consegne", {"nome": "x"}, tok)
+        self.assertEqual(code, 201)
+        self.assertEqual(set(d), {"_connectedClients"})                 # niente da leggere
+        self.mk_consegna(w["a1"])
+        t2 = self.mk_tipo(w["sa"], "Lettura consegne", ["consegne.leggi", "consegne.scrivi"])
+        self.mk_utente(w["sa"], "s2", t2, w["nA"])
+        code, d = self.call("POST", "/api/consegne", {"nome": "y"}, self.token("s2", "s2pw"))
+        self.assertEqual(set(d), {"consegne", "_connectedClients"})
+        self.assertEqual(len(d["consegne"]), 3)
 
     def test_modifica_permessi_effettiva_al_login_successivo(self):
         w = self.world()
@@ -625,6 +653,18 @@ class TestStato(Base):
         self.assertGreater(a1["consegne"], a0["consegne"])
         self.assertEqual(a1["giornate"], a0["giornate"])
         self.assertEqual(b1, b0)
+
+    def test_stato_non_rinnova_la_sessione(self):
+        w = self.world()
+        with srv.sessions_lock:
+            srv.sessions[w["a1"]]["expires"] = srv.time.time() + 100
+            prima = srv.sessions[w["a1"]]["expires"]
+        self.assertEqual(self.call("GET", "/api/stato", token=w["a1"])[0], 200)
+        with srv.sessions_lock:
+            self.assertEqual(srv.sessions[w["a1"]]["expires"], prima)
+        self.assertEqual(self.call("GET", "/api/consegne", token=w["a1"])[0], 200)   # un'azione rinnova
+        with srv.sessions_lock:
+            self.assertGreater(srv.sessions[w["a1"]]["expires"], prima)
 
     def test_modifiche_incrociate(self):
         w = self.world()

@@ -174,8 +174,10 @@ def new_session(user, permessi):
         }
     return token
 
-def get_session(token):
-    """Sessione valida (rinnovata) oppure None. Ritorna una copia."""
+def get_session(token, renew=True):
+    """Sessione valida oppure None. Ritorna una copia. Con renew=True prolunga la scadenza:
+    le richieste di fondo del client (ping, polling) usano renew=False, così la scadenza
+    misura l'inattività dell'utente e non la sola presenza di una scheda aperta."""
     if not token:
         return None
     with sessions_lock:
@@ -186,8 +188,9 @@ def get_session(token):
         if now > s["expires"]:
             del sessions[token]
             return None
-        s["last_seen"] = now
-        s["expires"] = now + SESSION_TTL
+        if renew:
+            s["last_seen"] = now
+            s["expires"] = now + SESSION_TTL
         return dict(s)
 
 def delete_session(token):
@@ -220,14 +223,15 @@ def rec_or_404(collection, rid, label):
         raise HttpError(404, f"{label} non trovato/a")
     return rec
 
-def db_negozio(nid):
-    f = {"negozio_id": nid}
-    return {
-        "consegne": storage.list_records("consegne", f),
-        "giornate": storage.list_records("giornate", f),
-        "squadre":  storage.list_records("squadre", f),
-        "_connectedClients": get_connected_count(),
-    }
+LETTURA_CATEGORIA = {"consegne": "consegne.leggi", "giornate": "giornate.leggi", "squadre": "squadre.leggi"}
+
+def db_negozio(ctx):
+    """Dati del negozio della sessione, limitati alle categorie che l'utente può leggere."""
+    f = {"negozio_id": ctx.nid}
+    out = {cat: storage.list_records(cat, f)
+           for cat, perm in LETTURA_CATEGORIA.items() if perm in ctx.session["permessi"]}
+    out["_connectedClients"] = get_connected_count()
+    return out
 
 def ensure_superadmin():
     """Primo avvio: crea il superadmin con la password di default (cambio obbligatorio)."""
@@ -273,12 +277,12 @@ class Ctx:
     def dlog(self, msg):
         log(f"[DATI] '{self.username}' — {msg}")
 
-ROUTES = []   # (metodo, regex, requisito, ammesso_con_cambio_password, funzione)
+ROUTES = []   # (metodo, regex, requisito, ammesso_con_cambio_password, rinnova_sessione, funzione)
 
-def route(method, pattern, requirement, pending_ok=False):
+def route(method, pattern, requirement, pending_ok=False, renew=True):
     rx = re.compile("^" + re.sub(r":(\w+)", r"(?P<\1>[^/]+)", pattern) + "$")
     def deco(fn):
-        ROUTES.append((method, rx, requirement, pending_ok, fn))
+        ROUTES.append((method, rx, requirement, pending_ok, renew, fn))
         return fn
     return deco
 
@@ -336,6 +340,10 @@ def h_challenge(ctx):
 
 @route("GET", "/api/ping", PUBLIC)
 def h_ping(ctx):
+    # senza token (healthcheck Docker) è sempre 200; con un token non più valido → 401, così
+    # il client scopre la scadenza anche senza polling (superadmin). Non rinnova la sessione.
+    if ctx.token and not get_session(ctx.token, renew=False):
+        raise HttpError(401, "Non autenticato")
     register_client(ctx.ip, ctx.handler.headers.get("X-Client-ID"))
     return 200, {"ok": True, "clients": get_connected_count()}
 
@@ -406,7 +414,7 @@ def h_change_password(ctx):
     log(f"[AUTH] '{ctx.username}' ha cambiato la propria password")
     return 200, {"ok": True}
 
-@route("GET", "/api/stato", OPER)
+@route("GET", "/api/stato", OPER, renew=False)
 def h_stato(ctx):
     register_client(ctx.ip, ctx.handler.headers.get("X-Client-ID"))
     return 200, get_timestamps(ctx.nid)
@@ -602,7 +610,7 @@ def h_create_consegna(ctx):
     storage.insert_record("consegne", rec)
     touch(ctx.nid, "consegne")
     ctx.dlog(f"Nuova consegna: {label_consegna(rec)}")
-    return 201, db_negozio(ctx.nid)
+    return 201, db_negozio(ctx)
 
 @route("PUT", "/api/consegne/:cid", "consegne.scrivi")
 def h_update_consegna(ctx, cid):
@@ -617,7 +625,7 @@ def h_update_consegna(ctx, cid):
         raise HttpError(409, "La consegna è stata modificata da un altro utente. Ricarica e riprova.")
     touch(ctx.nid, "consegne")
     ctx.dlog(f"Modificata consegna: {label_consegna({**cur, **changes})}")
-    return 200, db_negozio(ctx.nid)
+    return 200, db_negozio(ctx)
 
 @route("DELETE", "/api/consegne/:cid", "consegne.elimina")
 def h_delete_consegna(ctx, cid):
@@ -626,7 +634,7 @@ def h_delete_consegna(ctx, cid):
     storage.delete_record("consegne", cid)   # la toglie da tutte le giornate
     touch(ctx.nid, "consegne", "giornate")
     ctx.dlog(f"Eliminata consegna: {label_consegna(cur)}")
-    return 200, db_negozio(ctx.nid)
+    return 200, db_negozio(ctx)
 
 # ─── ENDPOINT: giornate ──────────────────────────────────────────────────────
 
@@ -652,7 +660,7 @@ def h_create_giornata(ctx):
                                        "data": data, "squadra": squadra})
     touch(ctx.nid, "giornate")
     ctx.dlog(f"Aggiunta giornata {data}")
-    return 201, db_negozio(ctx.nid)
+    return 201, db_negozio(ctx)
 
 @route("DELETE", "/api/giornate/:gid", "giornate.elimina")
 def h_delete_giornata(ctx, gid):
@@ -662,7 +670,7 @@ def h_delete_giornata(ctx, gid):
     storage.delete_record("giornate", gid)
     touch(ctx.nid, "giornate")
     ctx.dlog(f"Eliminata giornata {g['data']}")
-    return 200, db_negozio(ctx.nid)
+    return 200, db_negozio(ctx)
 
 @route("POST", "/api/giornate/:gid/assegna", "giornate.assegna")
 def h_giornata_assegna(ctx, gid):
@@ -675,7 +683,7 @@ def h_giornata_assegna(ctx, gid):
         storage.update_record("consegne", cid, {"stato": "da_confermare", "giornoConsegna": g["data"]})
     touch(ctx.nid, "giornate", "consegne")
     ctx.dlog(f"Aggiunte {len(cids)} consegne alla giornata {g['data']}")
-    return 200, db_negozio(ctx.nid)
+    return 200, db_negozio(ctx)
 
 @route("DELETE", "/api/giornate/:gid/assegna/:cid", "giornate.assegna")
 def h_giornata_rimuovi(ctx, gid, cid):
@@ -686,7 +694,7 @@ def h_giornata_rimuovi(ctx, gid, cid):
         storage.update_record("consegne", cid, {"stato": "in_attesa", "giornoConsegna": "", "fasciaOraria": ""})
     touch(ctx.nid, "giornate", "consegne")
     ctx.dlog(f"Rimossa consegna {cid} dalla giornata {g['data']}")
-    return 200, db_negozio(ctx.nid)
+    return 200, db_negozio(ctx)
 
 @route("PUT", "/api/giornate/:gid/riordina", "giornate.riordina")
 def h_giornata_riordina(ctx, gid):
@@ -694,7 +702,7 @@ def h_giornata_riordina(ctx, gid):
     storage.giornata_riordina(gid, need_id_list(ctx.body(), "consegna_ids"))
     touch(ctx.nid, "giornate")
     ctx.dlog(f"Riordinata giornata {g['data']}")
-    return 200, db_negozio(ctx.nid)
+    return 200, db_negozio(ctx)
 
 @route("PUT", "/api/giornate/:gid/consegne/:cid/completa", "giornate.segna_completata")
 def h_segna_completata(ctx, gid, cid):
@@ -706,7 +714,7 @@ def h_segna_completata(ctx, gid, cid):
     storage.update_record("consegne", cid, {"stato": "completata"})
     touch(ctx.nid, "consegne")
     ctx.dlog(f"Consegna completata: {label_consegna(c)}")
-    return 200, db_negozio(ctx.nid)
+    return 200, db_negozio(ctx)
 
 # ─── ENDPOINT: squadre ───────────────────────────────────────────────────────
 
@@ -728,7 +736,7 @@ def h_create_squadra(ctx):
                                       "nome": nome, "colorIdx": n % SQ_COLORS})
     touch(ctx.nid, "squadre")
     ctx.dlog(f"Aggiunta squadra '{nome}'")
-    return 201, db_negozio(ctx.nid)
+    return 201, db_negozio(ctx)
 
 @route("PUT", "/api/squadre/:sid", "squadre.gestisci")
 def h_update_squadra(ctx, sid):
@@ -761,7 +769,7 @@ def h_update_squadra(ctx, sid):
         raise HttpError(409, "La squadra è stata modificata da un altro utente. Ricarica e riprova.")
     touch(ctx.nid, "squadre", "giornate")
     ctx.dlog(f"Aggiornata squadra '{cur['nome']}'")
-    return 200, db_negozio(ctx.nid)
+    return 200, db_negozio(ctx)
 
 @route("DELETE", "/api/squadre/:sid", "squadre.gestisci")
 def h_delete_squadra(ctx, sid):
@@ -773,7 +781,7 @@ def h_delete_squadra(ctx, sid):
     storage.delete_record("squadre", sid)
     touch(ctx.nid, "squadre", "giornate")
     ctx.dlog(f"Eliminata squadra '{cur['nome']}'")
-    return 200, db_negozio(ctx.nid)
+    return 200, db_negozio(ctx)
 
 # ─── HTTP HANDLER ────────────────────────────────────────────────────────────
 
@@ -857,7 +865,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_json(500, {"error": "Errore interno"})
 
     def _dispatch_api(self, method, path):
-        for m, rx, requirement, pending_ok, fn in ROUTES:
+        for m, rx, requirement, pending_ok, renew, fn in ROUTES:
             if m != method:
                 continue
             match = rx.match(path)
@@ -867,14 +875,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             token = self.headers.get("X-Session-Token", "")
             session = None
             if requirement != PUBLIC:
-                session = get_session(token)
+                session = get_session(token, renew=renew)
                 if not session:
                     raise HttpError(401, "Non autenticato")
                 if session["must_change_password"] and not pending_ok:
                     raise HttpError(403, "Cambio password obbligatorio")
                 authorize(session, requirement)
-            elif token:
-                get_session(token)   # un ping con token valido rinnova la sessione
             code, payload = fn(Ctx(self, token, session, params), **params)
             return self.send_json(code, payload)
         raise HttpError(404, "Risorsa non trovata")

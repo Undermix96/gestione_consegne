@@ -243,7 +243,7 @@ CHALLENGE_TTL = 60     # secondi
 | GET | `/*` | File statici dalla directory `BASE_DIR`. |
 
 ### Endpoint HTTP — V2 (implementati in `server.py`, fase 2 ✅)
-Sostituiscono `GET/POST /api/data` e `POST /api/log`. `GET /api/ping` resta senza autenticazione obbligatoria (usato dall'healthcheck Docker); se il client invia `X-Session-Token` valido la sessione viene rinnovata. `GET /*` (file statici) invariato.
+Sostituiscono `GET/POST /api/data` e `POST /api/log`. `GET /api/ping` resta senza autenticazione obbligatoria (usato dall'healthcheck Docker); se il client invia `X-Session-Token` la sessione non viene rinnovata e, se non è più valida, la risposta è 401 (così il client scopre la scadenza). Anche `GET /api/stato` non rinnova la sessione: la scadenza (2 ore) misura l'inattività dell'utente, non la presenza di una scheda aperta; ogni altra richiesta la rinnova. `GET /*` (file statici) invariato.
 
 | Metodo | Path | Auth | Permesso richiesto | Descrizione |
 |--------|------|------|--------------------|-------------|
@@ -1004,6 +1004,7 @@ Dove il design di §5 lasciava margine, o dove `dev` è stato migliorato:
 - **`versione` obbligatoria** (intero) nei `PUT` di consegne e squadre: se manca → 400, se non coincide → 409. Le altre operazioni (assegna, rimuovi, riordina, completa, rinomina delle giornate) non richiedono `versione` e incrementano quella dei record che toccano, quindi un'altra modifica in corso su quella consegna riceverà 409.
 - **Giornate:** eliminare una giornata con consegne assegnate → 409 (come già fa l'interfaccia V1; `dev` le rimetteva in attesa). Assegnare imposta `stato = da_confermare` e `giornoConsegna`; rimuovere riporta `in_attesa` (solo se `programmata`/`da_confermare`) e svuota `giornoConsegna`/`fasciaOraria`. `data` deve essere `AAAA-MM-GG`.
 - **Squadre:** nome univoco per negozio (senza distinzione di maiuscole), `colorIdx` 0-7 (alla creazione: numero di squadre del negozio modulo 8). Rinominare aggiorna `giornate.squadra`; eliminare lo svuota. **Operazioni multi-record non atomiche** (lo storage non ha transazioni tra collezioni): l'ordine delle scritture è scelto perché un'interruzione si risolva ripetendo l'operazione (giornate prima, squadra dopo).
+- **Risposte delle scritture filtrate per permessi di lettura:** includono solo le categorie (`consegne`, `giornate`, `squadre`) che la sessione può leggere.
 - **Polling:** timestamp **per negozio**, in memoria; partono dall'ora di avvio e sono strettamente crescenti. Eliminare una consegna, rinominare/eliminare una squadra e assegnare/rimuovere aggiornano più categorie.
 - **File statici:** serviti solo `index.html`, `css/`, `js/` (V1 serviva qualunque file dell'immagine, compreso il codice Python).
 - **Rimossi:** `GET/POST /api/data`, `POST /api/log`, `/api/clients`, CORS (`/api` è sulla stessa origine).
