@@ -971,6 +971,127 @@ class TestBackup(Base):
         self.assertEqual(self.call("GET", "/api/ping")[0], 200)                       # il server resta in piedi
 
 
+class TestLogEOperazioniComposte(Base):
+
+    # ── SEC-08 ──
+    def test_log_su_una_riga_sola(self):
+        logging.disable(logging.NOTSET)
+        try:
+            with self.assertLogs(level="DEBUG") as cm:
+                self.login("falso\n2026-10-20 10:00:00 [INFO] [AUTH] 'superadmin' ha effettuato il login\r\x1b[2J", "x")
+                w = self.world()
+                self.mk_consegna(w["a1"], cognome="Rossi\nFalso [WARN] riga inventata", nome="Mario")
+        finally:
+            logging.disable(logging.CRITICAL)
+        for riga in cm.output:
+            self.assertEqual(len(riga.splitlines()), 1, riga)
+            self.assertNotIn("\x1b", riga)
+        self.assertTrue(any("falso?2026-10-20" in r for r in cm.output))
+        self.assertTrue(any("Rossi?Falso" in r for r in cm.output))
+        self.assertEqual(len(srv._CTRL_RE.sub("?", "x" * 5000)[:srv.MAX_LOG_LEN]), srv.MAX_LOG_LEN)
+
+    def test_client_id_non_valido_non_si_conta(self):
+        with srv.clients_lock:
+            srv.client_heartbeat.clear()
+        for cid in ("abc", "x" * 65, "con spazio!", "aè" * 8, "valido-12345678"):
+            c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+            c.request("GET", "/api/ping", headers={"X-Client-ID": cid})
+            c.getresponse().read()
+            c.close()
+        with srv.clients_lock:
+            chiavi = set(srv.client_heartbeat)
+        self.assertEqual(chiavi, {"valido-12345678"})      # gli altri cadono sull'IP (qui localhost: non conta)
+        with srv.clients_lock:
+            srv.client_heartbeat.clear()
+            for i in range(srv.MAX_CLIENTS):
+                srv.client_heartbeat[f"id-{i:08d}"] = srv.time.time()
+        srv.register_client("1.1.1.1", "nuovo-id-12345")
+        with srv.clients_lock:
+            self.assertEqual(len(srv.client_heartbeat), srv.MAX_CLIENTS)
+            srv.client_heartbeat.clear()
+
+    # ── SEC-10 ──
+    def test_errori_di_validazione_senza_dettagli_interni(self):
+        sa = self.superadmin()
+        code, d = self.call("POST", "/api/tipi-account", {"nome": "x" * 300, "permessi": []}, sa)
+        self.assertEqual(code, 400)
+        self.assertEqual(d, {"error": "Dati non validi"})
+
+    def test_completata_richiede_segna_completata(self):
+        w = self.world()
+        sa = w["sa"]
+        t = self.mk_tipo(sa, "Senza completa", [p for p in OPS if p != "giornate.segna_completata"])
+        self.mk_utente(sa, "s1", t, w["nA"])
+        s1 = self.token("s1", "s1pw")
+        self.assertEqual(self.call("POST", "/api/consegne", {"nome": "x", "stato": "completata"}, s1)[0], 403)
+        c = self.mk_consegna(s1)
+        v = c["versione"]
+        self.assertEqual(self.call("PUT", f"/api/consegne/{c['id']}", {"versione": v, "stato": "completata"}, s1)[0], 403)
+        self.assertEqual(self.call("PUT", f"/api/consegne/{c['id']}", {"versione": v, "stato": "annullata"}, s1)[0], 200)
+        # chi ha il permesso può
+        c2 = self.mk_consegna(w["a1"])
+        self.assertEqual(self.call("PUT", f"/api/consegne/{c2['id']}",
+                                   {"versione": c2["versione"], "stato": "completata"}, w["a1"])[0], 200)
+        # già completata: modificare altro (o rimandare lo stesso stato) non richiede il permesso
+        c3 = self.mk_consegna(w["a1"], stato="completata")
+        _, d = self.call("GET", "/api/consegne", token=s1)
+        ver = [x for x in d["consegne"] if x["id"] == c3["id"]][0]["versione"]
+        self.assertEqual(self.call("PUT", f"/api/consegne/{c3['id']}",
+                                   {"versione": ver, "stato": "completata", "note": "ok"}, s1)[0], 200)
+
+    def test_assegna_annullata_se_un_passaggio_fallisce(self):
+        w = self.world()
+        t = w["a1"]
+        gid = self.mk_giornata(t)
+        c1, c2 = self.mk_consegna(t, cognome="A"), self.mk_consegna(t, cognome="B")
+        originale = st.update_record
+        chiamate = []
+
+        def guasto(coll, rid, changes, expected_versione=None):
+            if coll == "consegne":
+                chiamate.append(rid)
+                if len(chiamate) == 2:
+                    raise st.StorageError("guasto simulato")
+            return originale(coll, rid, changes, expected_versione=expected_versione)
+        srv.storage.update_record = guasto
+        try:
+            code, _ = self.call("POST", f"/api/giornate/{gid}/assegna", {"consegna_ids": [c1["id"], c2["id"]]}, t)
+        finally:
+            srv.storage.update_record = originale
+        self.assertEqual(code, 500)
+        self.assertEqual(st.get_record("giornate", gid).get("consegneIds", []), [])
+        for c in (c1, c2):
+            self.assertEqual(st.get_record("consegne", c["id"])["stato"], "in_attesa")
+            self.assertFalse(st.get_record("consegne", c["id"]).get("giornoConsegna"))
+
+    def test_squadre_con_lo_stesso_nome_in_parallelo(self):
+        from concurrent.futures import ThreadPoolExecutor
+        w = self.world()
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            codici = list(ex.map(lambda _: self.call("POST", "/api/squadre", {"nome": "Doppia"}, w["a1"])[0], range(8)))
+        self.assertEqual(sorted(codici), [201] + [409] * 7)
+
+    def test_elimina_giornata_e_assegna_in_parallelo(self):
+        from concurrent.futures import ThreadPoolExecutor
+        w = self.world()
+        t = w["a1"]
+        sid = self.mk_squadra(t)
+        for i in range(8):
+            gid = self.mk_giornata(t, data=f"2026-06-{i + 1:02d}", squadra_id=sid)
+            c = self.mk_consegna(t, cognome=f"P{i}")
+            with ThreadPoolExecutor(max_workers=2) as ex:
+                a = ex.submit(self.call, "POST", f"/api/giornate/{gid}/assegna", {"consegna_ids": [c["id"]]}, t)
+                d = ex.submit(self.call, "DELETE", f"/api/giornate/{gid}", None, t)
+                ca, cd = a.result()[0], d.result()[0]
+            g = st.get_record("giornate", gid)
+            stato = st.get_record("consegne", c["id"])["stato"]
+            if g is None:                      # eliminata prima: nessuna consegna "assegnata" senza giornata
+                self.assertEqual((cd, ca, stato), (200, 404, "in_attesa"))
+            else:                              # assegnata prima: l'eliminazione è stata rifiutata
+                self.assertEqual((ca, cd, stato), (200, 409, "da_confermare"))
+                self.assertEqual(g["consegneIds"], [c["id"]])
+
+
 class TestVarie(Base):
 
     def test_file_statici_solo_frontend(self):

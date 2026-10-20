@@ -7,6 +7,7 @@ Gestione Consegne — Server V2 (Docker)
 - Log su stdout (catturati da Docker)
 """
 
+import functools
 import hashlib
 import http.server
 import ipaddress
@@ -115,8 +116,13 @@ def setup_logging():
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
+_CTRL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
+MAX_LOG_LEN = 1000
+
 def log(msg, level="info"):
-    getattr(logging, level)(msg)
+    """Ogni riga di log è una riga sola: username, nomi e note arrivano dai client, e un a capo
+    permetterebbe di falsificare righe del log di audit (log injection)."""
+    getattr(logging, level)(_CTRL_RE.sub("?", str(msg))[:MAX_LOG_LEN])
 
 # ─── UTILITÀ ────────────────────────────────────────────────────────────────
 
@@ -128,6 +134,22 @@ def now_iso():
 
 def new_id(prefix):
     return prefix + secrets.token_hex(8)
+
+# Le operazioni che leggono, controllano e poi scrivono su più record (assegnare consegne a una giornata,
+# eliminare una giornata, creare squadre con nome univoco...) non sono atomiche nello storage: due richieste
+# in parallelo potevano sorpassarsi (giornata eliminata mentre le si assegnano consegne, due squadre con lo
+# stesso nome). Il server è un processo unico (§4: niente repliche), quindi basta un lock di processo.
+ops_lock = threading.RLock()
+
+def serialized(fn):
+    """Esegue l'handler in mutua esclusione. Il corpo della richiesta si legge PRIMA di prendere il lock:
+    un client lento non deve tenere fermi gli altri."""
+    @functools.wraps(fn)
+    def wrapper(ctx, *args, **kwargs):
+        ctx.body()
+        with ops_lock:
+            return fn(ctx, *args, **kwargs)
+    return wrapper
 
 class HttpError(Exception):
     def __init__(self, code, message):
@@ -178,13 +200,22 @@ def backup_loop():
 
 clients_lock = threading.Lock()
 client_heartbeat = {}   # chiave (X-Client-ID o IP) -> ultimo heartbeat
+CLIENT_ID_RE = re.compile(r"[0-9A-Za-z_-]{8,64}")   # il frontend manda 32 caratteri esadecimali
+MAX_CLIENTS = 10000
 
 def register_client(ip, client_id=None):
-    """Le richieste dell'healthcheck Docker (localhost, senza X-Client-ID) non si contano."""
+    """Le richieste dell'healthcheck Docker (localhost, senza X-Client-ID) non si contano.
+    Un X-Client-ID che non ha la forma attesa si ignora (si conta l'IP): è un valore scelto dal client,
+    senza questo controllo si potrebbe gonfiare il contatore e la memoria con identificatori arbitrari."""
+    if client_id is not None and not CLIENT_ID_RE.fullmatch(client_id):
+        client_id = None
     if client_id is None and ip in HEALTHCHECK_IPS:
         return
     with clients_lock:
-        client_heartbeat[client_id or ip] = time.time()
+        key = client_id or ip
+        if key not in client_heartbeat and len(client_heartbeat) >= MAX_CLIENTS:
+            return
+        client_heartbeat[key] = time.time()
 
 def get_connected_count():
     now = time.time()
@@ -837,6 +868,13 @@ def clean_articoli(v):
                 raise HttpError(400, f"articolo.{k} non valido")
     return v
 
+def check_completata(ctx, nuovo_stato, stato_attuale=None):
+    """Impostare lo stato "completata" richiede giornate.segna_completata, come l'endpoint dedicato:
+    con il solo consegne.scrivi si potrebbe altrimenti aggirare quel permesso."""
+    if nuovo_stato == "completata" and stato_attuale != "completata" \
+            and "giornate.segna_completata" not in ctx.session["permessi"]:
+        raise HttpError(403, "Permesso mancante: giornate.segna_completata")
+
 def consegna_fields(body):
     f = {k: v for k, v in body.items() if k not in ("id", "negozio_id", "versione") and not k.startswith("_")}
     # campi sconosciuti: ammessi (lo storage li conserva come "extra" per i campi futuri) ma limitati
@@ -861,6 +899,7 @@ def h_get_consegne(ctx):
 @route("POST", "/api/consegne", "consegne.scrivi")
 def h_create_consegna(ctx):
     rec = {**consegna_fields(ctx.body()), "id": new_id("c_"), "negozio_id": ctx.nid}
+    check_completata(ctx, rec.get("stato"))
     storage.insert_record("consegne", rec)
     touch(ctx.nid, "consegne")
     ctx.dlog(f"Nuova consegna: {label_consegna(rec)}")
@@ -873,6 +912,7 @@ def h_update_consegna(ctx, cid):
     changes = consegna_fields(b)
     cur = rec_or_404("consegne", cid, "Consegna")
     check_tenant(ctx, cur)
+    check_completata(ctx, changes.get("stato"), cur.get("stato"))
     try:
         storage.update_record("consegne", cid, changes, expected_versione=ver)
     except ConflictError:
@@ -882,6 +922,7 @@ def h_update_consegna(ctx, cid):
     return 200, db_negozio(ctx)
 
 @route("DELETE", "/api/consegne/:cid", "consegne.elimina")
+@serialized
 def h_delete_consegna(ctx, cid):
     cur = rec_or_404("consegne", cid, "Consegna")
     check_tenant(ctx, cur)
@@ -902,6 +943,7 @@ def h_get_giornate(ctx):
     return 200, {"giornate": storage.list_records("giornate", {"negozio_id": ctx.nid})}
 
 @route("POST", "/api/giornate", "giornate.crea")
+@serialized
 def h_create_giornata(ctx):
     b = ctx.body()
     data = need_text(b, "data", "data")
@@ -922,6 +964,7 @@ def h_create_giornata(ctx):
     return 201, db_negozio(ctx)
 
 @route("DELETE", "/api/giornate/:gid", "giornate.elimina")
+@serialized
 def h_delete_giornata(ctx, gid):
     g = giornata_del_negozio(ctx, gid)
     if g.get("consegneIds"):
@@ -932,19 +975,39 @@ def h_delete_giornata(ctx, gid):
     return 200, db_negozio(ctx)
 
 @route("POST", "/api/giornate/:gid/assegna", "giornate.assegna")
+@serialized
 def h_giornata_assegna(ctx, gid):
     g = giornata_del_negozio(ctx, gid)
     cids = need_id_list(ctx.body(), "consegna_ids")
     for cid in cids:
         check_tenant(ctx, rec_or_404("consegne", cid, "Consegna"))
+    nuove = [cid for cid in dict.fromkeys(cids) if cid not in g.get("consegneIds", [])]
+    prima = {cid: storage.get_record("consegne", cid) for cid in nuove}
     storage.giornata_assegna(gid, cids)
-    for cid in cids:
-        storage.update_record("consegne", cid, {"stato": "da_confermare", "giornoConsegna": g["data"]})
+    fatte = []
+    try:
+        for cid in cids:
+            storage.update_record("consegne", cid, {"stato": "da_confermare", "giornoConsegna": g["data"]})
+            fatte.append(cid)
+    except Exception:
+        # assegnazione e cambio di stato sono due scritture: se la seconda fallisce si annulla la prima,
+        # così non restano consegne assegnate ma ancora "in attesa" (o viceversa)
+        for cid in nuove:
+            try:
+                storage.giornata_rimuovi(gid, cid)
+                if cid in fatte and prima.get(cid):
+                    storage.update_record("consegne", cid, {"stato": prima[cid].get("stato"),
+                                                            "giornoConsegna": prima[cid].get("giornoConsegna")})
+            except Exception:
+                logging.exception("Annullamento dell'assegnazione di %s non riuscito", cid)
+        touch(ctx.nid, "giornate", "consegne")
+        raise
     touch(ctx.nid, "giornate", "consegne")
     ctx.dlog(f"Aggiunte {len(cids)} consegne alla giornata {g['data']}")
     return 200, db_negozio(ctx)
 
 @route("DELETE", "/api/giornate/:gid/assegna/:cid", "giornate.assegna")
+@serialized
 def h_giornata_rimuovi(ctx, gid, cid):
     g = giornata_del_negozio(ctx, gid)
     storage.giornata_rimuovi(gid, cid)
@@ -956,6 +1019,7 @@ def h_giornata_rimuovi(ctx, gid, cid):
     return 200, db_negozio(ctx)
 
 @route("PUT", "/api/giornate/:gid/riordina", "giornate.riordina")
+@serialized
 def h_giornata_riordina(ctx, gid):
     g = giornata_del_negozio(ctx, gid)
     storage.giornata_riordina(gid, need_id_list(ctx.body(), "consegna_ids"))
@@ -964,6 +1028,7 @@ def h_giornata_riordina(ctx, gid):
     return 200, db_negozio(ctx)
 
 @route("PUT", "/api/giornate/:gid/consegne/:cid/completa", "giornate.segna_completata")
+@serialized
 def h_segna_completata(ctx, gid, cid):
     g = giornata_del_negozio(ctx, gid)
     if cid not in g.get("consegneIds", []):
@@ -987,6 +1052,7 @@ def h_get_squadre(ctx):
     return 200, {"squadre": storage.list_records("squadre", {"negozio_id": ctx.nid})}
 
 @route("POST", "/api/squadre", "squadre.gestisci")
+@serialized
 def h_create_squadra(ctx):
     nome = need_text(ctx.body(), "nome", "Nome")
     nome_squadra_libero(ctx, nome)
@@ -998,6 +1064,7 @@ def h_create_squadra(ctx):
     return 201, db_negozio(ctx)
 
 @route("PUT", "/api/squadre/:sid", "squadre.gestisci")
+@serialized
 def h_update_squadra(ctx, sid):
     b = ctx.body()
     ver = need_versione(b)
@@ -1026,6 +1093,7 @@ def h_update_squadra(ctx, sid):
     return 200, db_negozio(ctx)
 
 @route("DELETE", "/api/squadre/:sid", "squadre.gestisci")
+@serialized
 def h_delete_squadra(ctx, sid):
     cur = rec_or_404("squadre", sid, "Squadra")
     check_tenant(ctx, cur)
@@ -1136,7 +1204,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_json(409, {"error": "Operazione non consentita dai vincoli dei dati"})
         except ValueError as e:
             log(f"[DATI] Dati non validi: {e}", "warning")
-            self.send_json(400, {"error": f"Dati non validi: {e}"})
+            self.send_json(400, {"error": "Dati non validi"})   # il dettaglio (nomi interni dei campi) resta nel log
         except Exception:
             logging.exception("Errore interno su %s %s", method, path)
             self.send_json(500, {"error": "Errore interno"})
