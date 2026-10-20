@@ -275,7 +275,7 @@ Sostituiscono `GET/POST /api/data` e `POST /api/log`. `GET /api/ping` resta senz
 | PUT | `/api/consegne/:id` | Token | `consegne.scrivi` | Modifica consegna |
 | DELETE | `/api/consegne/:id` | Token | `consegne.elimina` | Elimina consegna |
 | GET | `/api/giornate` | Token | `giornate.leggi` | Lista giornate del negozio |
-| POST | `/api/giornate` | Token | `giornate.crea` | Crea giornata |
+| POST | `/api/giornate` | Token | `giornate.crea` | Crea giornata (richiede `squadra_id`: obbligatorio, del proprio negozio) |
 | DELETE | `/api/giornate/:id` | Token | `giornate.elimina` | Elimina giornata |
 | POST | `/api/giornate/:id/assegna` | Token | `giornate.assegna` | Aggiunge consegne |
 | DELETE | `/api/giornate/:id/assegna/:cid` | Token | `giornate.assegna` | Rimuove consegna |
@@ -284,7 +284,7 @@ Sostituiscono `GET/POST /api/data` e `POST /api/log`. `GET /api/ping` resta senz
 | GET | `/api/squadre` | Token | `squadre.leggi` | Lista squadre del negozio |
 | POST | `/api/squadre` | Token | `squadre.gestisci` | Crea squadra |
 | PUT | `/api/squadre/:id` | Token | `squadre.gestisci` | Modifica squadra |
-| DELETE | `/api/squadre/:id` | Token | `squadre.gestisci` | Elimina squadra |
+| DELETE | `/api/squadre/:id` | Token | `squadre.gestisci` | Elimina squadra (409 se ha giornate) |
 
 ### Verifica permessi — ordine server
 1. Token valido → 401
@@ -333,13 +333,14 @@ Permessi hardcoded superadmin (non assegnabili): `tipi_account.gestisci`, `negoz
 ```
 consegne.scrivi            → consegne.leggi
 consegne.elimina           → consegne.leggi
+giornate.leggi             → squadre.leggi   (il nome della squadra si legge da squadre)
 giornate.crea              → giornate.leggi, squadre.leggi
 giornate.elimina           → giornate.leggi
 giornate.assegna           → giornate.leggi, consegne.leggi
 giornate.riordina          → giornate.leggi
 giornate.segna_completata  → giornate.leggi
 squadre.gestisci           → squadre.leggi
-stampa.pdf                 → giornate.leggi, consegne.leggi
+stampa.pdf                 → giornate.leggi, consegne.leggi, squadre.leggi
 utenti.crea                → utenti.leggi, tipi_account.leggi
 utenti.modifica            → utenti.leggi, tipi_account.leggi
 utenti.elimina             → utenti.leggi
@@ -497,7 +498,7 @@ Collezioni: `consegne`, `giornate`, `squadre`, `negozi`, `tipi_account`, `utenti
 - **`id` e `negozio_id` forniti dal chiamante**; `negozio_id` e `id` non sono modificabili; `versione` è gestita solo dallo storage (valore fornito all'inserimento ignorato).
 - **Default:** `consegne.stato = in_attesa`, `squadre.colorIdx = 0`, `utenti.is_superadmin = false`, `utenti.primo_login = true`.
 - **Unicità:** `id`; `utenti.username` e `tipi_account.nome`. `utenti.username` è confrontato **senza distinguere maiuscole/minuscole** (anche nei filtri), come fa `dev`, su tutti i backend.
-- **Riferimenti (come `RESTRICT`):** `negozio_id` deve esistere; `utenti.tipo_account_id` e `utenti.negozio_id` possono essere assenti (superadmin). Eliminare un negozio ancora usato (da utenti, consegne, giornate o squadre) o un tipo account con utenti → `IntegrityError`.
+- **Riferimenti (come `RESTRICT`):** `negozio_id` deve esistere; `utenti.tipo_account_id` e `utenti.negozio_id` possono essere assenti (superadmin). Eliminare un negozio ancora usato (da utenti, consegne, giornate o squadre), un tipo account con utenti o **una squadra con giornate** → `IntegrityError`. `giornate.squadra_id` è **obbligatorio**, deve esistere e appartenere allo stesso negozio della giornata (altrimenti `ValueError`); non si può rimuovere né modificare in una squadra di un altro negozio.
 - **Eliminare una consegna la toglie da tutte le giornate** (equivale a `ON DELETE CASCADE`), anche su JSON.
 - **Operazioni sulle giornate:** le consegne assegnate devono esistere (`NotFoundError`) e appartenere allo stesso negozio della giornata (`ValueError`); l'operazione è tutto-o-niente. **Non modificano `versione`** (come in `dev`).
 - **`giornata_completa` non esiste:** in `dev` "segna completata" imposta solo `stato = completata` sulla consegna; il flag per singola consegna nella giornata (`consegneCompletate`, colonna `completata`) non è mai stato usato né dal frontend né dal server. Viene ignorato in inserimento e non è più restituito.
@@ -647,16 +648,6 @@ CREATE TABLE consegne (
     extra JSONB,
     FOREIGN KEY (negozio_id) REFERENCES negozi(id) ON DELETE RESTRICT
 );
-CREATE TABLE giornate (
-    id VARCHAR(36) PRIMARY KEY,
-    seq BIGSERIAL NOT NULL UNIQUE,
-    negozio_id VARCHAR(36) NOT NULL,
-    data TEXT NOT NULL,
-    squadra TEXT,
-    versione INTEGER NOT NULL DEFAULT 1,
-    extra JSONB,
-    FOREIGN KEY (negozio_id) REFERENCES negozi(id) ON DELETE RESTRICT
-);
 CREATE TABLE squadre (
     id VARCHAR(36) PRIMARY KEY,
     seq BIGSERIAL NOT NULL UNIQUE,
@@ -665,6 +656,17 @@ CREATE TABLE squadre (
     color_idx INTEGER NOT NULL,
     versione INTEGER NOT NULL DEFAULT 1,
     extra JSONB,
+    FOREIGN KEY (negozio_id) REFERENCES negozi(id) ON DELETE RESTRICT
+);
+CREATE TABLE giornate (
+    id VARCHAR(36) PRIMARY KEY,
+    seq BIGSERIAL NOT NULL UNIQUE,
+    negozio_id VARCHAR(36) NOT NULL,
+    data TEXT NOT NULL,
+    squadra_id VARCHAR(36) NOT NULL,
+    versione INTEGER NOT NULL DEFAULT 1,
+    extra JSONB,
+    FOREIGN KEY (squadra_id) REFERENCES squadre(id) ON DELETE RESTRICT,
     FOREIGN KEY (negozio_id) REFERENCES negozi(id) ON DELETE RESTRICT
 );
 CREATE TABLE giornata_consegne (
@@ -682,11 +684,12 @@ CREATE TABLE meta (
 CREATE INDEX ix_utenti_negozio_id ON utenti (negozio_id);
 CREATE INDEX ix_utenti_tipo_account_id ON utenti (tipo_account_id);
 CREATE INDEX ix_consegne_negozio_id ON consegne (negozio_id);
+CREATE INDEX ix_giornate_squadra_id ON giornate (squadra_id);
 CREATE INDEX ix_giornate_negozio_id ON giornate (negozio_id);
 CREATE INDEX ix_squadre_negozio_id ON squadre (negozio_id);
 CREATE INDEX ix_giornata_consegne_consegna ON giornata_consegne (consegna_id);
 ```
-- **`giornate.squadra` resta una stringa (nome)** in questa iterazione. Il passaggio a `giornate.squadra_id` (FK verso `squadre`) è la **fase 6** (§11).
+- **`giornate.squadra_id` (obbligatorio, FK verso `squadre`, `RESTRICT`)** al posto del nome della squadra (fase 6 ✅): una squadra si elimina solo se non ha giornate; la rinomina non tocca le giornate. Le tabelle sono create con `squadre` prima di `giornate`. **Un archivio V2 di un'edizione precedente** (con `giornate.squadra` come nome) viene rifiutato all'avvio: i database per le colonne diverse, i file json con un errore dedicato (`SchemaError`, nessun file modificato). Il marcatore `schema_version` resta 2 (la V2 non è mai andata in produzione): gli archivi di sviluppo vanno ricreati.
 - Per il backend JSON la struttura dei record è la stessa (§8).
 - **Regole dello schema:** `ON DELETE RESTRICT` da `utenti` verso `tipi_account` e `negozi` e dalle tabelle operative verso `negozi`; `ON DELETE CASCADE` da `giornata_consegne` verso giornate e consegne; `negozio_id` `NOT NULL` sulle tabelle operative; indici sulle chiavi esterne; `giornata_consegne` senza la colonna `completata` (non usata).
 - `seq` serve solo a ordinare per inserimento: non esce mai dallo storage. `username_ci` è una colonna interna derivata (`casefold(username)`, lunga 3 × 150), anch'essa mai restituita.
@@ -830,7 +833,7 @@ Nessuna dipendenza circolare.
   "consegneIds": ["abc123"]
 }
 ```
-⚠️ In V1 `squadra` è una **stringa (nome)**. In V2 diventerà `squadra_id` (FK). Vedere sezione 11.
+In V1 `squadra` è una **stringa (nome)**. In V2 è `squadra_id` (**obbligatorio**, id di una squadra dello stesso negozio): `"squadra_id": "sq_abc123"`. La migrazione trasforma il nome in id (§11, fase 6).
 
 **Ordinamento sidebar:** `renderSidebar()` in `render.js` mostra le giornate in ordine cronologico **decrescente** (più recente in cima): `sorted.sort((a, b) => b.data.localeCompare(a.data))`. L'ordine è solo di presentazione, non ha impatto sui dati né sulla vista giornata selezionata.
 
@@ -855,7 +858,7 @@ Valido per tutti i backend. **Gli ID V2 sono generati dal server** con prefisso 
 ```json
 { "id": "c_abc123", "negozio_id": "n_abc123", "versione": 1, "...": "campi V1 invariati" }
 ```
-`giornate.squadra` resta una stringa (nome) fino alla fase 6 (§11).
+`giornate` ha inoltre `squadra_id` (obbligatorio) al posto di `squadra`.
 
 **`negozi`**
 ```json
@@ -898,7 +901,7 @@ Il superadmin è `{"id": "u_superadmin", "username": "superadmin", "tipo_account
 Lista → "Nuova consegna" → compila form → aggiungi articoli → Salva
 
 ### Programmare una consegna
-Giornate → seleziona o crea giornata → "Aggiungi consegna" → seleziona dalla lista "in attesa" → Aggiungi
+Giornate → seleziona o crea giornata (la squadra è obbligatoria) → "Aggiungi consegna" → seleziona dalla lista "in attesa" → Aggiungi
 
 ### Rimuovere da una giornata
 Click ✕ sulla card → la consegna torna "in_attesa", `giornoConsegna` e `fasciaOraria` svuotati
@@ -908,7 +911,8 @@ Click ✕ sulla card → la consegna torna "in_attesa", `giornoConsegna` e `fasc
 2. Pannello superadmin → **Negozi** → crea il primo negozio
 3. **Tipi account** → crea un tipo (es. "Amministratore") scegliendo i permessi
 4. **Utenti** → crea un utente assegnandogli negozio e tipo account
-5. Logout; login con il nuovo utente → operatività sul proprio negozio
+5. Logout; login con il nuovo utente → Impostazioni → **crea almeno una squadra** (senza squadre non si può creare nessuna giornata)
+6. Da qui l'operatività del proprio negozio: consegne, giornate (ogni giornata ha una squadra obbligatoria)
 
 ---
 
@@ -927,7 +931,7 @@ Click ✕ sulla card → la consegna torna "in_attesa", `giornoConsegna` e `fasc
 | File separati per JSON (non unico `dati.json`) | Scritture atomiche indipendenti per entità, preparazione V2 |
 | Schema DB nativo (non blob) | Leggibilità diretta nel DB, query possibili, preparazione V2 |
 | Campo `extra` JSONB/JSON | Absorbe campi futuri senza migration dello schema |
-| `squadra` come stringa in V1 | Retrocompatibilità; diventerà `squadra_id` (fase 6 della V2, vedi §11) |
+| `squadra` come stringa in V1 | Retrocompatibilità con i dati esistenti; in V2 è `squadra_id` (obbligatorio, fase 6 ✅) |
 | Healthcheck Python puro | Nessuna dipendenza da curl/wget nell'immagine |
 | Log HTTP agganciati al logger (`LOG_LEVEL`) | Log richieste utili in debug, silenziosi di default in produzione |
 | Contatore client per `X-Client-ID` (non IP) | In Docker più browser condividono lo stesso IP (NAT); l'IP da solo sottostima/sovrastima il conteggio |
@@ -968,7 +972,7 @@ Click ✕ sulla card → la consegna torna "in_attesa", `giornoConsegna` e `fasc
 | Log 100% server-side | Non aggirabile dal client; auditabilità reale |
 | `modal-admin.js` caricato dinamicamente | Non caricato per utenti normali; separazione netta |
 | `migrate.py` con tutti e 3 i backend come sorgente e destinazione | Il cliente può cambiare backend; la migrazione V1→V2 non deve dipendere dal backend in uso |
-| `squadra_id` rimandato (fase 6) | Cambia server, 5 file frontend, schema e migrazione: farlo insieme al resto aumenta il rischio di bug |
+| `squadra_id` obbligatorio, anticipato prima della migrazione di produzione (fase 6 ✅) | La migrazione dei dati si fa una sola volta: schema, server, frontend e migrazione cambiano insieme. Squadra obbligatoria: ogni giornata ha sempre una squadra (alla migrazione, "Non assegnata" solo se serve); una squadra con giornate non si elimina |
 
 ### Note per modifiche future (V2) 🚧
 - **Non usare `crypto.subtle`**: non disponibile su `http://IP:porta` da browser moderni
@@ -995,7 +999,7 @@ Questa sezione traccia l'avanzamento della V2 sul branch `v2-docker` (partito da
 | 3 | Frontend V2 (vedi metodo sotto) | ✅ completata — vedi "Scelte implementative della fase 3"; controlli statici e `sha256.js` in Node (`tests/js/run.mjs`), giro completo nel browser contro il server V2 (a mano, non automatizzato) |
 | 4 | `migrate.py` | ✅ completata — vedi "Scelte implementative della fase 4"; 27 test (logica pura e da un capo all'altro su json, `postgres:16`, `mysql:8.4`), provata anche con `docker run`, `docker compose` e uno stack in stile Portainer |
 | 5 | Test integrato: migrazione → primo login superadmin → negozio → tipo account → utente → login → operatività, su tutti e 3 i backend | ⬜ |
-| 6 | `squadra_id` al posto del nome squadra nelle giornate (server, `render.js`, `giornate.js`, `stampa.js`, `utils.js`, `modal-consegna.js`, schema, migrazione) | ⬜ rimandata |
+| 6 | `squadra_id` al posto del nome squadra nelle giornate (storage, server, frontend, migrazione) | ✅ completata (anticipata prima della fase 5) — vedi "Scelte implementative della fase 6" |
 
 Ogni fase è un commit separato (o gruppo di commit) rivisto prima di passare alla successiva.
 
@@ -1008,9 +1012,9 @@ Dove il design di §5 lasciava margine, o dove `dev` è stato migliorato:
 - **Utenti:** nessuno può reimpostare la password, cambiare il tipo o eliminare **se stesso** tramite gli endpoint di gestione (per la propria password c'è `change-password`); il reset della password di un altro utente imposta `primo_login = true` (deve sceglierne una sua al prossimo accesso); cambio tipo, reset password ed eliminazione invalidano subito le sessioni dell'utente. Un utente creato da un admin ha `primo_login = false`.
 - **`versione` obbligatoria** (intero) nei `PUT` di consegne e squadre: se manca → 400, se non coincide → 409. Le altre operazioni (assegna, rimuovi, riordina, completa, rinomina delle giornate) non richiedono `versione` e incrementano quella dei record che toccano, quindi un'altra modifica in corso su quella consegna riceverà 409.
 - **Giornate:** eliminare una giornata con consegne assegnate → 409 (come già fa l'interfaccia V1; `dev` le rimetteva in attesa). Assegnare imposta `stato = da_confermare` e `giornoConsegna`; rimuovere riporta `in_attesa` (solo se `programmata`/`da_confermare`) e svuota `giornoConsegna`/`fasciaOraria`. `data` deve essere `AAAA-MM-GG`.
-- **Squadre:** nome univoco per negozio (senza distinzione di maiuscole), `colorIdx` 0-7 (alla creazione: numero di squadre del negozio modulo 8). Rinominare aggiorna `giornate.squadra`; eliminare lo svuota. **Operazioni multi-record non atomiche** (lo storage non ha transazioni tra collezioni): l'ordine delle scritture è scelto perché un'interruzione si risolva ripetendo l'operazione (giornate prima, squadra dopo).
+- **Squadre:** nome univoco per negozio (senza distinzione di maiuscole), `colorIdx` 0-7 (alla creazione: numero di squadre del negozio modulo 8). Rinominare tocca solo la squadra (le giornate la referenziano per id, fase 6); eliminare è bloccato (409) se ha giornate.
 - **Risposte delle scritture filtrate per permessi di lettura:** includono solo le categorie (`consegne`, `giornate`, `squadre`) che la sessione può leggere.
-- **Polling:** timestamp **per negozio**, in memoria; partono dall'ora di avvio e sono strettamente crescenti. Eliminare una consegna, rinominare/eliminare una squadra e assegnare/rimuovere aggiornano più categorie.
+- **Polling:** timestamp **per negozio**, in memoria; partono dall'ora di avvio e sono strettamente crescenti. Eliminare una consegna e assegnare/rimuovere consegne aggiornano più categorie; rinominare o eliminare una squadra solo `squadre`.
 - **File statici:** serviti solo `index.html`, `css/`, `js/` (V1 serviva qualunque file dell'immagine, compreso il codice Python).
 - **Rimossi:** `GET/POST /api/data`, `POST /api/log`, `/api/clients`, CORS (`/api` è sulla stessa origine).
 - **Avvio:** `init_storage_v2()` + creazione del superadmin; `SchemaError` → log leggibile e uscita con codice 2; altro `StorageError` → codice 1.
@@ -1031,7 +1035,7 @@ Dove il design di §5 lasciava margine, o dove `dev` è stato migliorato:
 - **Configurazione solo da ambiente, cartelle e comando** (per compose, `docker run` e GUI di DSM 7.1/Portainer): ogni opzione ha una variabile `MIGRATE_*`/`SRC_*` e un argomento; senza argomenti esegue `run`. Cartelle: `/source` (sola lettura), `/data`, `/migration`. Le password si danno solo per variabile (mai in `ps`).
 - **Sicura per default:** senza `MIGRATE_EXECUTE=1` legge, convalida e stampa il rapporto, **senza scrivere nulla** nella destinazione (nemmeno il marcatore di schema); scrive solo il file di esportazione. La sorgente non viene mai modificata (per i json V1 e le tabelle V1 si usa `read_data()` senza `init_storage()`, che creerebbe file e tabelle).
 - **Sorgenti:** V1 su json/mysql/postgres (le chiavi snake_case e i NULL della V1 su SQL, difetto noto, vengono riportati al formato del frontend: `normalize_sql_v1`), `dati.json` di Windows (`--source-kind file`: assorbe il ruolo di `import_data.py` per la V2, che resta intatto per le immagini V1) e V2 su qualunque backend (cambio di backend, con utenti, tipi account e negozi). Una V1 scambiata per V2 (o viceversa) e una sorgente V2 vuota sono rifiutate.
-- **Trasformazione V1 → V2:** crea il negozio (`MIGRATE_NEGOZIO_NOME`, default "Negozio principale"), aggiunge `negozio_id` a squadre/consegne/giornate (gli id V1 restano), crea il superadmin con `server.superadmin_record()` (definizione unica con `ensure_superadmin()`), non crea altri utenti. `giornate.squadra` resta una stringa.
+- **Trasformazione V1 → V2:** crea il negozio (`MIGRATE_NEGOZIO_NOME`, default "Negozio principale"), aggiunge `negozio_id` a squadre/consegne/giornate (gli id V1 restano), crea il superadmin con `server.superadmin_record()` (definizione unica con `ensure_superadmin()`), non crea altri utenti. Il nome della squadra delle giornate diventa `squadra_id` (vedi "Scelte implementative della fase 6").
 - **Convalida con rapporto completo:** prima di scrivere si controllano **tutti** i record con le stesse regole dello storage (`_norm_insert`: tipi, lunghezze, NUL), id duplicati o mancanti, unicità (username senza distinzione di maiuscole, nome del tipo account), riferimenti (negozio, tipo account) e coerenza di negozio delle giornate; i riferimenti a consegne inesistenti si **scartano** e si riportano (con `MIGRATE_KEEP_ORPHANS=1` bloccano); gli `stato` fuori elenco sono solo un avviso. Se ci sono problemi bloccanti si esce con codice 2 senza scrivere.
 - **Destinazione:** deve essere completamente vuota (nessun record, nessun dato V1, nessuna migrazione interrotta). Un database mancante si crea con `MIGRATE_CREATE_DB=1` (su MySQL il permesso dipende dall'utente; MySQL non rivela se un database esiste, quindi "accesso negato al database" vale come "mancante"). Le credenziali rifiutate non si riprovano; gli altri errori di connessione sì (10 tentativi, 3 s).
 - **Scrittura e verifica:** `init_storage_v2()` → flag `migrazione_in_corso` → `insert_records` per collezione nell'ordine negozi, tipi account, utenti, squadre, consegne, giornate → ogni record viene **riletto e confrontato** (ignorando `versione`, che riparte da 1) → flag spento. Se la scrittura o la verifica falliscono il flag resta e il server V2 non parte; non c'è una ripresa automatica (si ricrea la destinazione e si rilancia `import` sullo stesso file).
@@ -1039,6 +1043,15 @@ Dove il design di §5 lasciava margine, o dove `dev` è stato migliorato:
 - **File di compose:** servizio `migrate` (profilo `migrate`) in `compose.yaml` per chi usa compose; `compose.migrate.yaml` autonomo per Portainer (stack) e simili, con `network_mode: ${DB_NETWORK:-bridge}` per raggiungere il database. Guida passo per passo anche per la GUI di Synology DSM 7.1 nel README.
 - **Correzione in `compose.yaml`:** l'app (`DB_HOST: db`) non poteva raggiungere i database perché i servizi si chiamano `db_mysql`/`db_postgres`: aggiunto l'alias di rete `db` ai due servizi (rilevato provando il profilo `postgres` con la migrazione).
 - **Test:** `tests/test_migrate.py` (logica pura, solo con json; da un capo all'altro come sottoprocessi con ambienti diversi: V1 json → V2 su ogni backend, V1 su postgres/mysql → V2 json, V2 → V2 andata e ritorno, `dati.json`, esporta poi importa, rapporto senza scritture, seconda esecuzione, destinazione con dati V1, sorgente = destinazione, rapporto con tutti i problemi, orfani, cartella non scrivibile, creazione del database, scrittura interrotta, verifica che trova una differenza). Controllati con bug intenzionali (verifica sempre ok, destinazione piena accettata, orfani non scartati, flag mai impostato, rapporto che scrive).
+
+### Scelte implementative della fase 6 (`squadra_id`)
+- **Perché ora:** la migrazione di produzione si farà una sola volta; schema, server, frontend e migrazione cambiano quindi insieme, prima del collaudo integrato (fase 5).
+- **Campo obbligatorio:** `giornate.squadra_id` (`NOT NULL`, FK `RESTRICT` verso `squadre`, stesso negozio). Una giornata non può esistere senza squadra; un negozio non può creare giornate finché non ha almeno una squadra (il modal avvisa e disattiva il salvataggio).
+- **Eliminazione bloccata:** una squadra con giornate non si elimina: il server risponde 409 ("La squadra ha giornate assegnate: eliminale prima") dopo un controllo esplicito, e lo storage la rifiuta comunque (`IntegrityError`, rete di sicurezza per due richieste in contemporanea); la UI la blocca prima di chiamare il server. Per togliere una squadra vanno eliminate le sue giornate, e una giornata con consegne si elimina solo dopo averne tolto le consegne (regola già in vigore).
+- **Rinomina:** tocca solo la squadra; nome e colore dei badge si cercano per id in `db.squadre`. Senza `squadre.leggi` il nome non è disponibile e il badge non si mostra (avvisi di dipendenza: `giornate.leggi` e `stampa.pdf` → `squadre.leggi`).
+- **Non è previsto cambiare la squadra di una giornata già creata** (come in V1): servirebbe un endpoint e un permesso nuovi. Se si sbaglia squadra, si elimina e si ricrea la giornata.
+- **Migrazione (V1 → V2), regole sul nome della squadra:** (1) nome uguale a una squadra → quella; altrimenti confronto senza maiuscole e spazi (avviso); (2) squadre con lo stesso nome → la prima (avviso); (3) nome senza squadra corrispondente → la squadra viene **creata** (avviso); (4) nome vuoto o assente → squadra "Non assegnata" (`MIGRATE_SQUADRA_NON_ASSEGNATA`), creata **solo se almeno una giornata ne ha bisogno** e riusata se esiste già una squadra con quel nome. Il rapporto elenca avvisi e note. Il file di esportazione resta nel formato V1 (con i nomi). Un archivio V2 con giornate senza `squadra_id` o con il vecchio `squadra` viene rifiutato dalla convalida.
+- **Test:** storage (obbligatorietà, esistenza, negozio, eliminazione bloccata e poi consentita, filtro, rifiuto dei vecchi archivi json) su json, PostgreSQL e MySQL; server (richiesta di `squadra_id`, 403/400, rinomina che non tocca le giornate, 409 e sblocco, polling); migrazione (le quattro regole, nessuna squadra in più se non serve, nome personalizzato, archivio V2 vecchio); frontend con i controlli statici e un giro nel browser (modal senza squadre, badge, rinomina, blocco e sblocco, utente senza `squadre.leggi`).
 
 ### Metodo e regole
 - **Non riscrivere a memoria il codice del branch `dev`:** si parte dai file di `dev` (`git show origin/dev:<file>`) e si adattano.
@@ -1049,7 +1062,7 @@ Dove il design di §5 lasciava margine, o dove `dev` è stato migliorato:
 
 ### Requisiti di `migrate.py` (fase 4) 🚧
 - **Sorgente e destinazione**: ciascuno dei tre backend (json, mysql, postgres), in qualsiasi combinazione, selezionabili da configurazione/argomenti (interfaccia da definire).
-- Trasformazione V1 → V2: crea il negozio "Negozio principale"; aggiunge `negozio_id` e `versione: 1` a tutte le consegne, giornate e squadre; crea il superadmin (`is_superadmin = true`, password di default `admin` con hash pre-calcolato, `primo_login = true`); crea `tipi_account` vuoto. Gli ID V1 non vengono modificati; `giornate.squadra` resta stringa.
+- Trasformazione V1 → V2: crea il negozio "Negozio principale"; aggiunge `negozio_id` e `versione: 1` a tutte le consegne, giornate e squadre; crea il superadmin (`is_superadmin = true`, password di default `admin` con hash pre-calcolato, `primo_login = true`); crea `tipi_account` vuoto. Gli ID V1 non vengono modificati; il nome della squadra delle giornate diventa `squadra_id` (fase 6).
 - **Protezioni** (proposte): backup completo della sorgente prima di scrivere; blocco contro la doppia esecuzione (file flag nel volume o tabella `migrazioni`); sorgente mai modificata; verifica finale con conteggio record per collezione tra sorgente e destinazione.
 - **La destinazione deve essere un archivio vuoto** (database nuovo o cartella dati nuova): il controllo dello schema (§6) impedisce di migrare "sul posto" sopra tabelle o file V1. `init_storage_v2()` marca la destinazione V2 appena la inizializza; subito dopo `migrate.py` imposta il flag `migrazione_in_corso` e lo toglie solo a verifica conclusa: una migrazione interrotta lascia così una destinazione che il server si rifiuta di avviare. La sorgente V1 si legge con le funzioni V1 (`read_data`).
 - Dopo la migrazione nessun utente oltre al superadmin esiste: vanno creati dal pannello (§9).

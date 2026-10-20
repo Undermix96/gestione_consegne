@@ -14,7 +14,7 @@ Sistema completo per la gestione di consegne e installazioni, progettato per tea
 
 ### Pianificazione Giornate
 - **Organizzazione per date** con drag & drop delle consegne
-- **Assegnazione a squadre** con colori distintivi
+- **Assegnazione a squadre** con colori distintivi (ogni giornata ha una squadra; una squadra con giornate non si può eliminare)
 - **Statistiche giornaliere** (totale consegne, completate)
 - **Stampa PDF** delle liste giornaliere
 
@@ -153,6 +153,7 @@ Porta i dati V1 (json, MySQL o PostgreSQL), il `dati.json` della versione Window
 - **La sorgente non viene mai modificata.** Il file di esportazione (`/migration/export-<data>.json`) è una copia completa dei dati di partenza: **conservarlo** (contiene i dati dei clienti).
 - **La destinazione deve essere nuova e completamente vuota**: un'altra cartella dati, un altro volume o un altro database. Il server V2 si rifiuta comunque di partire su dati V1. I dati V1 restano dove sono, intatti, fino a quando decidi di eliminarli.
 - Alla fine ogni record viene **riletto dalla destinazione e confrontato** con l'originale. Se la scrittura o la verifica falliscono, la destinazione resta marcata come "migrazione in corso" e il server V2 non parte: si ricrea la destinazione (nuova cartella o database vuoto) e si rilancia.
+- **Squadre:** nella V2 ogni giornata ha una squadra obbligatoria (`squadra_id`). La migrazione trasforma il nome della squadra di ogni giornata nella squadra corrispondente, crea le squadre mancanti e segnala tutto nel rapporto; le giornate senza squadra vengono assegnate a una squadra "Non assegnata", creata solo se serve.
 - Dopo la migrazione esiste solo l'account `superadmin` (password `admin`, da cambiare al primo accesso): gli altri utenti vanno creati dal pannello.
 
 **Variabili d'ambiente** (ogni opzione ha anche un argomento: `python migrate.py --help`)
@@ -169,6 +170,7 @@ Porta i dati V1 (json, MySQL o PostgreSQL), il `dati.json` della versione Window
 | `MIGRATE_EXECUTE` | `1` = scrive davvero (altrimenti solo rapporto) |
 | `MIGRATE_CREATE_DB` | `1` = crea il database di destinazione se non esiste (mysql/postgres; l'utente deve poter creare database) |
 | `MIGRATE_NEGOZIO_NOME` | Nome del negozio creato per i dati V1 (default `Negozio principale`) |
+| `MIGRATE_SQUADRA_NON_ASSEGNATA` | Nome della squadra per le giornate V1 senza squadra (default `Non assegnata`): viene creata **solo se almeno una giornata ne ha bisogno** |
 | `MIGRATE_KEEP_ORPHANS` | `1` = i riferimenti a consegne inesistenti bloccano la migrazione (default: vengono scartati e riportati nel rapporto) |
 | `MIGRATE_OUT` | File di esportazione (default `/migration/export-<data>.json`) |
 
