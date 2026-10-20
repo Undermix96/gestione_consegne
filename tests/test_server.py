@@ -456,6 +456,38 @@ class TestUtenti(Base):
                                    {"nuova_hash": h1("x")}, w["sa"])[0], 403)
         self.assertEqual(self.call("DELETE", "/api/utenti/inesistente", token=w["sa"])[0], 404)
 
+    def test_nessuna_escalation_di_privilegi(self):
+        w = self.world()
+        sa, uid = w["sa"], w["uid"]
+        # "Capo": gestisce gli utenti ma ha meno permessi del Responsabile (a2)
+        capo = self.mk_tipo(sa, "Capo", ["consegne.leggi", "utenti.leggi", "utenti.crea",
+                                         "utenti.modifica", "utenti.elimina", "tipi_account.leggi"])
+        self.mk_utente(sa, "c1", capo, w["nA"])
+        c1 = self.token("c1", "c1pw")
+        new = {"username": "x1", "password_hash": h1("p")}
+        # non può creare utenti con un tipo più potente del suo (né assegnarlo a un altro)
+        self.assertEqual(self.call("POST", "/api/utenti", {**new, "tipo_account_id": w["admin"]}, c1)[0], 403)
+        self.assertEqual(self.call("POST", "/api/utenti", {**new, "tipo_account_id": w["full"]}, c1)[0], 403)
+        self.assertEqual(self.call("PUT", f"/api/utenti/{uid['r1']}/tipo",
+                                   {"tipo_account_id": w["admin"]}, c1)[0], 403)
+        # non può toccare chi ha più permessi di lui: reset password, cambio tipo, eliminazione
+        self.assertEqual(self.call("PUT", f"/api/utenti/{uid['a2']}/password",
+                                   {"nuova_hash": h1("x")}, c1)[0], 403)
+        self.assertEqual(self.call("PUT", f"/api/utenti/{uid['a1']}/tipo",
+                                   {"tipo_account_id": w["reader"]}, c1)[0], 403)
+        self.assertEqual(self.call("DELETE", f"/api/utenti/{uid['a2']}", token=c1)[0], 403)
+        self.assertEqual(self.login("a2", "a2pw")[0], 200)      # nulla è stato modificato
+        # ciò che è contenuto nei suoi permessi resta consentito
+        code, d = self.call("POST", "/api/utenti", {**new, "tipo_account_id": w["reader"]}, c1)
+        self.assertEqual(code, 201, d)
+        self.assertEqual(self.call("PUT", f"/api/utenti/{uid['r1']}/password",
+                                   {"nuova_hash": h1("y")}, c1)[0], 200)
+        self.assertEqual(self.call("DELETE", f"/api/utenti/{d['id']}", token=c1)[0], 200)
+        # il superadmin non ha limiti
+        self.assertEqual(self.call("PUT", f"/api/utenti/{uid['r1']}/tipo",
+                                   {"tipo_account_id": w["admin"]}, sa)[0], 200)
+
+
 
 class TestConsegne(Base):
 
@@ -776,6 +808,19 @@ class TestVarie(Base):
         w = self.world()
         self.assertIn(self.call("DELETE", "/api/consegne/%00", token=w["a1"])[0], (400, 404))   # mai 500
         self.assertEqual(self.call("DELETE", "/api/consegne/" + "x" * 300, token=w["a1"])[0], 404)
+
+    def test_content_length_negativo_o_enorme(self):
+        # prima del fix un valore negativo faceva leggere il socket fino alla chiusura (thread bloccato)
+        for cl, atteso in (("-1", 400), (str(srv.MAX_BODY + 1), 413), ("abc", 400)):
+            c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+            c.putrequest("POST", "/api/auth/login")
+            c.putheader("Content-Length", cl)
+            c.endheaders()
+            self.assertEqual(c.getresponse().status, atteso, cl)
+            c.close()
+
+    def test_timeout_sui_socket(self):
+        self.assertTrue(srv.Handler.timeout and srv.Handler.timeout > 0)
 
     def test_contatore_client(self):
         c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)

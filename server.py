@@ -580,6 +580,13 @@ def h_delete_tipo(ctx, tid):
 def public_user(u):
     return {k: v for k, v in u.items() if k != "password_hash"}
 
+def check_not_escalating(ctx, permessi):
+    """Chi non è superadmin può assegnare o toccare solo ciò che è contenuto nei propri permessi."""
+    if ctx.session["is_superadmin"]:
+        return
+    if not set(permessi) <= set(ctx.session["permessi"]):
+        raise HttpError(403, "Non puoi assegnare o modificare permessi che non possiedi")
+
 def target_user(ctx, uid):
     """Utente su cui si agisce: esiste, non è il superadmin, non è chi agisce, è del negozio giusto."""
     u = rec_or_404("utenti", uid, "Utente")
@@ -587,6 +594,7 @@ def target_user(ctx, uid):
         raise HttpError(403, "Non puoi modificare il superadmin")
     if not ctx.session["is_superadmin"] and u.get("negozio_id") != ctx.nid:
         raise HttpError(403, "Accesso negato: negozio non corrispondente")
+    check_not_escalating(ctx, resolve_permessi(u))   # non si agisce su chi ha più permessi di noi
     return u
 
 @route("GET", "/api/utenti", "utenti.leggi")
@@ -603,6 +611,7 @@ def h_create_utente(ctx):
     tipo = storage.get_record("tipi_account", b.get("tipo_account_id")) if isinstance(b.get("tipo_account_id"), str) else None
     if not tipo:
         raise HttpError(400, "Tipo account non valido")
+    check_not_escalating(ctx, [p for p in tipo.get("permessi", []) if p in PERMESSI_VALIDI])
     if ctx.session["is_superadmin"]:
         nid = b.get("negozio_id")
         neg = storage.get_record("negozi", nid) if isinstance(nid, str) else None
@@ -643,6 +652,7 @@ def h_set_tipo(ctx, uid):
     u = target_user(ctx, uid)
     if u["id"] == ctx.session["user_id"]:
         raise HttpError(403, "Non puoi modificare il tuo stesso account")
+    check_not_escalating(ctx, [p for p in tipo.get("permessi", []) if p in PERMESSI_VALIDI])
     storage.update_record("utenti", uid, {"tipo_account_id": tid})
     invalidate_user_sessions(uid)
     log(f"[UTENTI] Tipo account di '{u['username']}' cambiato in '{tipo['nome']}' da '{ctx.username}'")
@@ -863,6 +873,8 @@ STATIC_DIRS = ("css", "js")
 
 class Handler(http.server.BaseHTTPRequestHandler):
 
+    timeout = 15   # secondi di inattività del socket: chiude connessioni mute o inviate a pezzi (slowloris)
+
     def log_message(self, format, *args):
         log(format % args, "debug")
 
@@ -883,6 +895,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
+            raise HttpError(400, "Content-Length non valido")
+        if length < 0:
             raise HttpError(400, "Content-Length non valido")
         if length > MAX_BODY:
             raise HttpError(413, "Richiesta troppo grande")

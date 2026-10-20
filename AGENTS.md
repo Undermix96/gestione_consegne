@@ -404,6 +404,8 @@ Un utente con `tipo_account_id: null` viene bloccato al login con messaggio "Acc
 - Superadmin riceve 403 su tutti gli endpoint operativi (`/api/consegne`, `/api/giornate`, `/api/squadre`, `/api/stato`)
 - Il server filtra sempre per `negozio_id` su tutti gli endpoint operativi
 - Un utente non può eliminare se stesso
+- **Nessuna escalation di privilegi (SEC-02):** chi non è superadmin può creare un utente o cambiargli il tipo solo con un tipo i cui permessi sono contenuti nei propri, e può reimpostare la password, cambiare il tipo o eliminare solo utenti i cui permessi attuali sono contenuti nei propri (403 altrimenti). Funzione `check_not_escalating()` in `server.py`, usata da `h_create_utente`, `h_set_tipo` e `target_user()`
+- **Limiti del socket (SEC-01):** `Handler.timeout = 15` s (connessioni mute o inviate a pezzi vengono chiuse); `Content-Length` negativo o non numerico → 400, oltre `MAX_BODY` → 413
 - Gli errori di concorrenza (`versione` non coincidente) rispondono **409 Conflict**; token mancante/scaduto **401**; permesso o negozio non coerente **403**
 
 ### Optimistic locking 🚧
@@ -456,8 +458,26 @@ Le richieste dell'healthcheck Docker interno (`127.0.0.1`/`::1`, nessun header `
 ### Limiti noti della sicurezza V2 🚧
 - **Hash memorizzato = credenziale equivalente.** Nel Challenge-Response il server deve conoscere `sha256(password)` per calcolare la risposta attesa; chi leggesse quel valore dal DB/volume potrebbe autenticarsi senza conoscere la password. Il DB non è esposto sull'host e il volume `/data` è raggiungibile solo da chi amministra l'host Docker; il rischio è accettato per poter proteggere le credenziali su HTTP senza `crypto.subtle`. Da non cambiare senza una decisione esplicita.
 - **Password di default del superadmin (`admin`) finché non viene cambiata al primo accesso:** chiunque sulla LAN che la conosca potrebbe entrare nel pannello admin. Cambiarla subito dopo il primo avvio.
-- **Rate limiting dei tentativi di login:** non previsto in questa versione (i tentativi falliti sono solo loggati).
+- **Rate limiting dei tentativi di login:** non previsto in questa versione (i tentativi falliti sono solo loggati). Vedi SEC-06 nell'audit sotto.
 - **Sessioni e challenge in memoria:** perse a ogni riavvio; incompatibili con più repliche (vedi §4).
+
+### Audit di sicurezza (2026-10-20) — esito e stato 🚧
+Revisione del codice di `v2-docker` (server, storage, frontend, Docker). Non sono emerse SQL injection, path traversal, deserializzazione insicura né XSS sfruttabili; CSRF non applicabile (token in header custom, non cookie). Problemi trovati e stato:
+
+| ID | Sev. | Problema | Stato |
+|----|------|----------|-------|
+| SEC-01 | Alta | DoS non autenticato: `Content-Length: -1` bloccava un thread su `rfile.read(-1)`; nessun timeout sul socket (slowloris) | ✅ corretto |
+| SEC-02 | Alta | Escalation di privilegi: `utenti.crea/modifica/elimina` permettevano di assegnare tipi più potenti o di reimpostare/eliminare utenti con più permessi | ✅ corretto |
+| SEC-03 | Media | `articoli` e `tipoConsegna` non validati: un dato malformato (`[null]`, `"constructor"`) rompe il rendering per tutto il negozio; nessun limite ai campi extra | 🔲 da fare |
+| SEC-04 | Media | Mancano gli header di sicurezza (CSP, `X-Frame-Options`, `nosniff`, `Referrer-Policy`); `css/layout.css` importa i font da Google (contrario al vincolo "nessuna dipendenza esterna") | 🔲 da fare |
+| SEC-05 | Media | Credenziali su HTTP: `password_hash` e `nuova_hash` viaggiano in chiaro, SHA-256 senza salt (attacco a dizionario sul challenge osservato), token in chiaro; la lunghezza minima della password è solo lato client | accettato (vincolo HTTP, vedi "Limiti noti"); valutare HTTPS o KDF |
+| SEC-06 | Media | Nessun rate limiting su login e `/api/auth/challenge` (1000 challenge vive bloccano i login con 503); password iniziale `admin` | 🔲 aperto |
+| SEC-07 | Media | La revoca di permessi di un tipo account non vale per le sessioni attive (scadenza scorrevole, nessun limite assoluto) | 🔲 aperto |
+| SEC-08 | Bassa | Log injection (username e campi consegna nei log senza sanificazione); `X-Client-ID` arbitrario sul `/api/ping` pubblico | 🔲 aperto |
+| SEC-09 | Bassa | Handler inline `onclick="f('${escHtml(id)}')"`: l'entità `&#39;` torna `'` prima del JS; non sfruttabile finché gli id sono generati dal server | 🔲 latente |
+| SEC-10 | Bassa | Race minori: assegnazione consegne non atomica, eliminazione giornata concorrente con assegnazione, nome squadra duplicato, `stato: completata` via `PUT` senza `giornate.segna_completata`, testo degli errori di validazione al client | 🔲 aperto |
+
+Carenze architetturali annotate: nessun limite di risorse né `cap_drop`/`no-new-privileges` nel compose; porta pubblicata su tutte le interfacce; immagine `:latest`; chiavi GPG dei repository PGDG/MySQL scaricate senza verifica dell'impronta; nessun `pip-audit`; file di dati e backup json con umask predefinita (contengono gli hash); i 403 non sono loggati.
 
 ---
 
