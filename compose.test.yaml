@@ -69,3 +69,18 @@ services:
       - /tmp
     healthcheck:
       disable: true
+
+  # Controlli statici del frontend e test di sha256.js (Node serve solo qui, mai nell'app):
+  #   docker compose -f compose.test.yaml run --rm jstests
+  jstests:
+    image: node:22-alpine
+    profiles: ["js"]
+    working_dir: /app
+    command: ["node", "tests/js/run.mjs"]
+    volumes:
+      - ./js:/app/js:ro
+      - ./index.html:/app/index.html:ro
+      - ./tests/js:/app/tests/js:ro
+    read_only: true
+    tmpfs:
+      - /tmp
