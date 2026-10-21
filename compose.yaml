@@ -40,6 +40,9 @@ services:
       # Backup (vedi README): secondi tra due backup automatici (default 21600 = 6 ore, 0 = nessuno) e file conservati (30)
       BACKUP_INTERVAL: "${BACKUP_INTERVAL:-}"
       BACKUP_KEEP:     "${BACKUP_KEEP:-}"
+      # Log su file in /data/log (scaricabili dal superadmin): dimensione massima di un file (default 5 MB, 0 = nessun file) e file conservati (10)
+      LOG_FILE_MAX_BYTES: "${LOG_FILE_MAX_BYTES:-}"
+      LOG_FILE_KEEP:      "${LOG_FILE_KEEP:-}"
       # Limiti sui tentativi di accesso per IP (0 = disattivati) e reverse proxy fidati (vedi README)
       LOGIN_MAX_FAIL_IP: "${LOGIN_MAX_FAIL_IP:-}"
       CHALLENGE_MAX_IP:  "${CHALLENGE_MAX_IP:-}"

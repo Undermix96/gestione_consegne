@@ -321,6 +321,8 @@ In V2 i file `api.js`, `sync.js`, `store.js`, `render.js`, `giornate.js`, `squad
 | `LOG_LEVEL` | `INFO` | Livello di log: `DEBUG` (include ogni richiesta HTTP) \| `INFO` \| `WARNING` \| `ERROR` |
 | `BACKUP_INTERVAL` | `21600` | Secondi tra due backup automatici (6 ore), solo se ci sono state modifiche; `0` = nessun backup automatico |
 | `BACKUP_KEEP` | `30` | Quanti backup conservare (per tipo), con qualsiasi backend |
+| `LOG_FILE_MAX_BYTES` | `5242880` | Dimensione massima di `/data/log/server.log` prima della rotazione; `0` = nessun log su file |
+| `LOG_FILE_KEEP` | `10` | File di log ruotati conservati |
 | `LOGIN_MAX_FAIL_IP` | `20` | Tentativi di login falliti per IP in 5 minuti prima del blocco (429); `0` = limite per IP disattivato (restano quelli per username) |
 | `CHALLENGE_MAX_IP` | `50` | Challenge di login vivi per IP; `0` = nessun limite per IP |
 | `TRUSTED_PROXIES` | _(vuoto)_ | IP o reti (CIDR) dei reverse proxy fidati, separati da virgola: solo per le richieste che arrivano da lì si usa l'IP reale dei client (`X-Forwarded-For`) |
@@ -384,7 +386,9 @@ I log vengono scritti su **stdout** e gestiti da Docker (`docker compose logs -f
 2026-06-18 10:30:00 [WARN]  [AUTH]         Login fallito — password errata per 'pippo' da 192.168.1.33
 ```
 
-Categorie: `[AUTH]`, `[UTENTI]`, `[DATI]`, `[NEGOZI]`, `[TIPI_ACCOUNT]`. In Docker l'IP registrato può essere quello del gateway/NAT e non quello reale del client.
+Categorie: `[AUTH]`, `[UTENTI]`, `[DATI]`, `[NEGOZI]`, `[TIPI_ACCOUNT]`, `[BACKUP]`, `[LOG]`.
+
+Oltre che nel log di Docker, il log è salvato in `/data/log/server.log` (ruotato a 5 MB, ultimi 10 file: `LOG_FILE_MAX_BYTES`, `LOG_FILE_KEEP`; `LOG_FILE_MAX_BYTES=0` lo disattiva). L'account `superadmin` ha la scheda **Log**: elenco dei file e download di ciascuno o di tutti in un `.zip`. I log contengono nomi utente e indirizzi IP. In Docker l'IP registrato può essere quello del gateway/NAT e non quello reale del client.
 
 ## 🛡️ Sicurezza
 

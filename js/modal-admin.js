@@ -8,7 +8,7 @@ import {
   fetchNegozi, createNegozio, updateNegozio, deleteNegozio,
   fetchTipiAccount, createTipoAccount, updateTipoAccount, deleteTipoAccount,
   fetchUtenti, createUtente, setPasswordUtente, setTipoAccount, deleteUtente,
-  fetchBackup, runBackup,
+  fetchBackup, runBackup, fetchLog, downloadLog,
 } from './api.js';
 import { PERMESSI, DIPENDENZE, getPermessiPerGruppo, getMissingDeps } from './permessi.js';
 import { toast, escHtml } from './utils.js';
@@ -34,6 +34,7 @@ export async function renderPannelloSuperadmin(containerId = _containerId) {
         <button class="admin-tab"         data-tab="tipi"         onclick="_adminTab('tipi')">🏷 Tipi account</button>
         <button class="admin-tab"         data-tab="utenti"       onclick="_adminTab('utenti')">👥 Utenti</button>
         <button class="admin-tab"         data-tab="backup"       onclick="_adminTab('backup')">💾 Backup</button>
+        <button class="admin-tab"         data-tab="log"          onclick="_adminTab('log')">📜 Log</button>
       </div>
       <div id="adminContent" class="admin-content"></div>
     </div>
@@ -69,6 +70,8 @@ async function _adminTab(tab) {
       _renderUtentiAdmin(content);
     } else if (tab === 'backup') {
       _renderBackup(content, await fetchBackup());
+    } else if (tab === 'log') {
+      _renderLog(content, await fetchLog());
     }
   } catch (e) {
     content.innerHTML = `<div style="padding:24px;color:var(--cancel)">Errore: ${escHtml(e.message)}</div>`;
@@ -127,6 +130,48 @@ async function _backupOra() {
   } catch (e) {
     toast(`Errore: ${e.data?.error || e.message}`, 6000);
     if (btn) { btn.disabled = false; btn.textContent = '💾 Esegui backup ora'; }
+  }
+}
+
+// ── LOG ───────────────────────────────────────────
+
+function _renderLog(container, info) {
+  const files = info.files || [];
+  const righe = files.map(f => `
+    <tr>
+      <td><strong>${escHtml(f.nome)}</strong></td>
+      <td class="muted" style="font-family:'DM Mono',monospace;font-size:12px;">${escHtml(f.modificato.replace('T', ' '))}</td>
+      <td class="muted">${escHtml(_fmtKb(f.dimensione))}</td>
+      <td><button class="btn" onclick="_scaricaLog(${escHtml(JSON.stringify(f.nome))})">⬇ Scarica</button></td>
+    </tr>`).join('');
+  const vuoto = info.attivo
+    ? 'Nessun file di log ancora.'
+    : 'Log su file disattivato (LOG_FILE_MAX_BYTES=0): resta solo il log di Docker.';
+  container.innerHTML = `
+    <div class="admin-section-header">
+      <h3>Log del server</h3>
+      ${files.length ? `<button class="btn btn-primary" onclick="_scaricaLog('tutti')">⬇ Scarica tutto (.zip)</button>` : ''}
+    </div>
+    <p class="muted" style="margin:0 0 14px;">
+      Il file attivo è <code>server.log</code>; quando supera ${escHtml(_fmtKb(info.max_bytes))} viene ruotato in
+      <code>server.log.1</code>, <code>.2</code>, … e si conservano ${escHtml(String(info.conservati))} file ruotati.
+      I log contengono nomi utente e indirizzi IP.
+    </p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>File</th><th>Ultima modifica</th><th>Dimensione</th><th></th></tr></thead>
+        <tbody>${righe || `<tr><td colspan="4" style="text-align:center;padding:32px;color:var(--muted)">${escHtml(vuoto)}</td></tr>`}</tbody>
+      </table>
+    </div>
+  `;
+  window._scaricaLog = _scaricaLog;
+}
+
+async function _scaricaLog(nome) {
+  try {
+    await downloadLog(nome);
+  } catch (e) {
+    toast(`Errore: ${e.data?.error || e.message}`, 6000);
   }
 }
 

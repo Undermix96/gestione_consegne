@@ -10,9 +10,11 @@ Gestione Consegne — Server V2 (Docker)
 import functools
 import hashlib
 import http.server
+import io
 import ipaddress
 import json
 import logging
+import logging.handlers
 import os
 import re
 import secrets
@@ -20,6 +22,7 @@ import socketserver
 import sys
 import threading
 import time
+import zipfile
 from datetime import datetime
 from urllib.parse import unquote
 
@@ -115,6 +118,42 @@ def setup_logging():
         format="%(asctime)s [%(levelname)s] %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
+    setup_file_logging()
+
+# Log su file (visibile e scaricabile dal superadmin): stesso contenuto di stdout, in DATA_DIR/log/.
+# Il file contiene username e IP: permessi 0600. Se la cartella non è scrivibile si continua solo con stdout.
+LOG_FILE_MAX_BYTES = _env_int("LOG_FILE_MAX_BYTES", 5 * 1024 * 1024)   # 0 = nessun file di log
+LOG_FILE_KEEP      = _env_int("LOG_FILE_KEEP", 10)                      # file ruotati conservati
+LOG_FILE_NAME      = "server.log"
+LOG_FILE_RE        = re.compile(r"server\.log(\.\d{1,3})?")             # unici nomi ammessi nel download
+
+def log_dir():
+    return os.path.join(storage.DATA_DIR, "log")
+
+class _PrivateRotatingHandler(logging.handlers.RotatingFileHandler):
+    def _open(self):
+        stream = super()._open()
+        try:
+            os.chmod(self.baseFilename, 0o600)
+        except OSError:
+            pass
+        return stream
+
+def setup_file_logging():
+    """Aggiunge il file di log ruotato; restituisce l'handler (None se disattivato o non scrivibile)."""
+    if LOG_FILE_MAX_BYTES <= 0:
+        return None
+    root = logging.getLogger()
+    try:
+        os.makedirs(log_dir(), exist_ok=True)
+        handler = _PrivateRotatingHandler(os.path.join(log_dir(), LOG_FILE_NAME), maxBytes=LOG_FILE_MAX_BYTES,
+                                          backupCount=max(0, LOG_FILE_KEEP), encoding="utf-8")
+    except OSError as e:
+        root.warning("Log su file non disponibile (%s): si usa solo stdout", e)
+        return None
+    handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", "%Y-%m-%d %H:%M:%S"))
+    root.addHandler(handler)
+    return handler
 
 _CTRL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
 MAX_LOG_LEN = 1000
@@ -647,6 +686,59 @@ def h_run_backup(ctx):
     log(f"[BACKUP] Backup creato da '{ctx.username}': {r['file']}")
     return 200, {"ok": True, "file": r["file"], "avvisi": r.get("avvisi", []), **backup_info()}
 
+# ─── ENDPOINT: log (superadmin) ──────────────────────────────────────────────
+
+class FileResponse:
+    """Risposta che non è JSON: file da scaricare (da disco, oppure già in memoria)."""
+    def __init__(self, content_type, filename, path=None, data=None):
+        self.content_type, self.filename, self.path, self.data = content_type, filename, path, data
+
+def log_files():
+    """File di log presenti, dal più recente (server.log) al più vecchio (server.log.N)."""
+    out = []
+    try:
+        names = os.listdir(log_dir())
+    except OSError:
+        return out
+    for nome in names:
+        if not LOG_FILE_RE.fullmatch(nome):
+            continue
+        try:
+            st_ = os.stat(os.path.join(log_dir(), nome))
+        except OSError:
+            continue
+        out.append({"nome": nome, "dimensione": st_.st_size,
+                    "modificato": datetime.fromtimestamp(st_.st_mtime).isoformat(timespec="seconds")})
+    out.sort(key=lambda f: int(f["nome"].rpartition(".")[2]) if f["nome"] != LOG_FILE_NAME else 0)
+    return out
+
+@route("GET", "/api/log", SUPER)
+def h_get_log(ctx):
+    return 200, {"files": log_files(), "attivo": LOG_FILE_MAX_BYTES > 0,
+                 "max_bytes": LOG_FILE_MAX_BYTES, "conservati": LOG_FILE_KEEP}
+
+@route("GET", "/api/log/download/:nome", SUPER)
+def h_download_log(ctx, nome):
+    """`nome` = uno dei file elencati da GET /api/log (lista bianca: nessun path traversal), oppure `tutti` (zip)."""
+    if nome == "tutti":
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for f in log_files():
+                try:
+                    zf.write(os.path.join(log_dir(), f["nome"]), f["nome"])
+                except OSError:
+                    pass                      # ruotato proprio ora: si salta
+        log(f"[LOG] Tutti i file di log scaricati da '{ctx.username}' ({ctx.ip})")
+        return 200, FileResponse("application/zip", f"log-gestione-consegne-{datetime.now():%Y%m%d-%H%M%S}.zip",
+                                 data=buf.getvalue())
+    if not LOG_FILE_RE.fullmatch(nome):
+        raise HttpError(404, "File di log non trovato")
+    path = os.path.join(log_dir(), nome)
+    if not os.path.isfile(path):
+        raise HttpError(404, "File di log non trovato")
+    log(f"[LOG] File di log '{nome}' scaricato da '{ctx.username}' ({ctx.ip})")
+    return 200, FileResponse("text/plain; charset=utf-8", nome, path=path)
+
 # ─── ENDPOINT: negozi (superadmin) ───────────────────────────────────────────
 
 @route("GET", "/api/negozi", SUPER)
@@ -1153,6 +1245,37 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def send_file(self, code, fr):
+        """Download. Da disco si invia al massimo quanto il file misurava all'apertura (il log cresce mentre si legge)."""
+        f = None
+        try:
+            if fr.path is not None:
+                try:
+                    f = open(fr.path, "rb")
+                except OSError:
+                    raise HttpError(404, "File di log non trovato")
+                size = os.fstat(f.fileno()).st_size
+            else:
+                size = len(fr.data)
+            self.send_response(code)
+            self.send_header("Content-Type", fr.content_type)
+            self.send_header("Content-Length", str(size))
+            self.send_header("Content-Disposition", f'attachment; filename="{fr.filename}"')
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            if f is None:
+                self.wfile.write(fr.data)
+                return
+            while size > 0:
+                chunk = f.read(min(65536, size))
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+                size -= len(chunk)
+        finally:
+            if f:
+                f.close()
+
     def read_json_body(self):
         try:
             length = int(self.headers.get("Content-Length") or 0)
@@ -1227,6 +1350,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     raise HttpError(403, "Cambio password obbligatorio")
                 authorize(session, requirement)
             code, payload = fn(Ctx(self, token, session, params), **params)
+            if isinstance(payload, FileResponse):
+                return self.send_file(code, payload)
             return self.send_json(code, payload)
         raise HttpError(404, "Risorsa non trovata")
 

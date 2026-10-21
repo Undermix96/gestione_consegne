@@ -971,6 +971,121 @@ class TestBackup(Base):
         self.assertEqual(self.call("GET", "/api/ping")[0], 200)                       # il server resta in piedi
 
 
+class TestLogScaricabili(Base):
+    """Log su file in DATA_DIR/log, elenco e download (singolo file o zip) riservati al superadmin."""
+
+    def setUp(self):
+        super().setUp()
+        self.dir = os.path.join(st.DATA_DIR, "log")
+        shutil.rmtree(self.dir, ignore_errors=True)
+        os.makedirs(self.dir)
+        for nome, testo in (("server.log", "riga attiva\n"), ("server.log.2", "vecchia\n"), ("server.log.1", "media\n"),
+                            ("altro.txt", "non va esposto\n")):
+            with open(os.path.join(self.dir, nome), "w", encoding="utf-8") as f:
+                f.write(testo)
+        self.addCleanup(shutil.rmtree, self.dir, True)
+
+    def get_raw(self, path, token):
+        c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=30)
+        c.request("GET", path, headers={"X-Session-Token": token} if token else {})
+        r = c.getresponse()
+        body = r.read()
+        c.close()
+        return r.status, dict(r.getheaders()), body
+
+    def test_solo_il_superadmin(self):
+        w = self.world()
+        for path in ("/api/log", "/api/log/download/server.log", "/api/log/download/tutti"):
+            self.assertEqual(self.call("GET", path, token=w["a2"])[0], 403, path)
+            self.assertEqual(self.call("GET", path, token=w["r1"])[0], 403, path)
+            self.assertEqual(self.call("GET", path)[0], 401, path)
+
+    def test_elenco_ordinato_e_solo_i_file_di_log(self):
+        sa = self.superadmin()
+        code, d = self.call("GET", "/api/log", token=sa)
+        self.assertEqual(code, 200)
+        self.assertEqual([f["nome"] for f in d["files"]], ["server.log", "server.log.1", "server.log.2"])
+        self.assertEqual(d["files"][0]["dimensione"], len("riga attiva\n"))
+        self.assertTrue(d["attivo"])
+
+    def test_download_singolo(self):
+        sa = self.superadmin()
+        code, h, body = self.get_raw("/api/log/download/server.log.1", sa)
+        self.assertEqual(code, 200)
+        self.assertEqual(body, b"media\n")
+        self.assertIn('attachment; filename="server.log.1"', h["Content-Disposition"])
+        self.assertTrue(h["Content-Type"].startswith("text/plain"))
+        self.assertEqual(h["Cache-Control"], "no-store")
+        self.assertEqual(h["X-Content-Type-Options"], "nosniff")
+
+    def test_download_zip(self):
+        import io
+        import zipfile
+        sa = self.superadmin()
+        code, h, body = self.get_raw("/api/log/download/tutti", sa)
+        self.assertEqual(code, 200)
+        self.assertEqual(h["Content-Type"], "application/zip")
+        self.assertIn(".zip", h["Content-Disposition"])
+        with zipfile.ZipFile(io.BytesIO(body)) as zf:
+            self.assertEqual(sorted(zf.namelist()), ["server.log", "server.log.1", "server.log.2"])
+            self.assertEqual(zf.read("server.log.2"), b"vecchia\n")
+
+    def test_nomi_non_ammessi(self):
+        sa = self.superadmin()
+        for nome in ("altro.txt", "server.log.x", "server.log.", "server.log.1234", "nulla", "..%2Fmeta.json",
+                     "%2e%2e%2fstorage.py", "server.log%00", "server.log.9"):
+            code, _, _ = self.get_raw("/api/log/download/" + nome, sa)
+            self.assertEqual(code, 404, nome)
+
+    def test_senza_cartella(self):
+        sa = self.superadmin()
+        shutil.rmtree(self.dir)
+        code, d = self.call("GET", "/api/log", token=sa)
+        self.assertEqual((code, d["files"]), (200, []))
+        self.assertEqual(self.get_raw("/api/log/download/tutti", sa)[0], 200)     # zip vuoto, non un errore
+        self.assertEqual(self.get_raw("/api/log/download/server.log", sa)[0], 404)
+
+    def test_handler_file_ruotato_e_privato(self):
+        import logging
+        saved = (srv.LOG_FILE_MAX_BYTES, srv.LOG_FILE_KEEP)
+        root = logging.getLogger()
+        h = None
+        try:
+            srv.LOG_FILE_MAX_BYTES, srv.LOG_FILE_KEEP = 300, 2
+            shutil.rmtree(self.dir)
+            h = srv.setup_file_logging()
+            self.assertIsNotNone(h)
+            for i in range(30):
+                h.emit(logging.LogRecord("t", logging.INFO, __file__, 1, f"riga {i} " + "x" * 40, None, None))
+            h.flush()
+            nomi = sorted(os.listdir(self.dir))
+            self.assertEqual(nomi, ["server.log", "server.log.1", "server.log.2"])      # mai più di KEEP file ruotati
+            if os.name == "posix":
+                self.assertEqual(os.stat(os.path.join(self.dir, "server.log")).st_mode & 0o777, 0o600)
+            with open(os.path.join(self.dir, "server.log"), encoding="utf-8") as f:
+                self.assertRegex(f.readline(), r"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d \[INFO\] riga \d+")
+        finally:
+            if h:
+                root.removeHandler(h)
+                h.close()
+            srv.LOG_FILE_MAX_BYTES, srv.LOG_FILE_KEEP = saved
+
+    def test_disattivato_o_cartella_non_scrivibile(self):
+        saved = srv.LOG_FILE_MAX_BYTES
+        try:
+            srv.LOG_FILE_MAX_BYTES = 0
+            self.assertIsNone(srv.setup_file_logging())
+            srv.LOG_FILE_MAX_BYTES = 1000
+            shutil.rmtree(self.dir)
+            with open(self.dir, "w") as f:                                          # un file al posto della cartella
+                f.write("x")
+            self.assertIsNone(srv.setup_file_logging())                              # nessuna eccezione: si resta su stdout
+        finally:
+            srv.LOG_FILE_MAX_BYTES = saved
+            if os.path.isfile(self.dir):
+                os.remove(self.dir)
+
+
 class TestLogEOperazioniComposte(Base):
 
     # ── SEC-08 ──

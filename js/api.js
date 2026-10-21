@@ -49,6 +49,31 @@ export async function runBackup() {
   return _json(`${API}/backup`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
 }
 
+// ── Log (superadmin) ─────────────────────────────
+
+export async function fetchLog() {
+  return _json(`${API}/log`, { cache: 'no-store' });
+}
+
+/** Scarica un file di log ('server.log', 'server.log.1', ...) oppure 'tutti' (zip). Il token sta nell'header,
+ *  quindi non basta un link: si scarica con fetch e si salva il blob. */
+export async function downloadLog(nome) {
+  const r = await _fetch(`${API}/log/download/${encodeURIComponent(nome)}`, { cache: 'no-store' });
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({ error: `HTTP ${r.status}` }));
+    throw Object.assign(new Error(err.error || 'Errore server'), { status: r.status, data: err });
+  }
+  const m = /filename="([^"]+)"/.exec(r.headers.get('Content-Disposition') || '');
+  const url = URL.createObjectURL(await r.blob());
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = m ? m[1] : nome;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+
 // ── Stato (polling) ──────────────────────────────
 
 export async function fetchStato() {

@@ -215,6 +215,8 @@ Protetto da file flag `/data/import_done`. Per i backend DB il container DB deve
 | `LOG_LEVEL` | `INFO` | `DEBUG` mostra anche ogni richiesta HTTP (`log_message`) |
 | `BACKUP_INTERVAL` | `21600` | Secondi tra due backup automatici (6 ore), solo se ci sono state modifiche; `0` = nessun backup automatico (fase 7) |
 | `BACKUP_KEEP` | `30` | Backup conservati per tipo, per tutti i backend (fase 7) |
+| `LOG_FILE_MAX_BYTES` | `5242880` | Dimensione massima di `DATA_DIR/log/server.log` prima della rotazione (5 MB); `0` = nessun log su file (resta solo stdout) |
+| `LOG_FILE_KEEP` | `10` | File di log ruotati conservati (`server.log.1` … `.10`) |
 | `LOGIN_MAX_FAIL_IP` | `20` | Tentativi di login falliti per IP in 5 minuti prima del blocco (429); `0` = limite per IP disattivato (restano quelli per username) |
 | `CHALLENGE_MAX_IP` | `50` | Challenge di login vivi per IP; `0` = nessun limite per IP (SEC-06) |
 | `TRUSTED_PROXIES` | _(vuoto)_ | IP o reti (CIDR) dei reverse proxy fidati, separati da virgola: solo per le richieste che arrivano da lì si usa l'IP reale dei client (`X-Forwarded-For`) |
@@ -271,6 +273,8 @@ Sostituiscono `GET/POST /api/data` e `POST /api/log`. `GET /api/ping` resta senz
 | GET | `/api/stato` | Token | — (no superadmin) | Timestamp categorie per polling |
 | GET | `/api/backup` | Token | superadmin | Elenco dei backup (nome, tipo, data, dimensione), intervallo e numero conservati |
 | POST | `/api/backup` | Token | superadmin | Backup immediato (snapshot json o dump SQL); risponde a backup concluso con l'elenco aggiornato (409 se uno è già in corso, 500 se fallisce) |
+| GET | `/api/log` | Token | superadmin | Elenco dei file di log (nome, dimensione, ultima modifica), `attivo`, `max_bytes`, `conservati` |
+| GET | `/api/log/download/:nome` | Token | superadmin | Scarica un file di log (`server.log`, `server.log.N`: lista bianca) come allegato `text/plain`, oppure `tutti` per uno zip; 404 per ogni altro nome |
 | GET | `/api/negozi` | Token | superadmin | Lista negozi |
 | POST | `/api/negozi` | Token | superadmin | Crea negozio |
 | PUT | `/api/negozi/:id` | Token | superadmin | Rinomina negozio |
@@ -447,7 +451,9 @@ Tutto su stdout (catturato da Docker). Formato: `YYYY-MM-DD HH:MM:SS [LEVEL] mes
 2026-06-18 10:15:00 [INFO]  [DATI]         'mario.rossi' — Nuova consegna: Rossi Mario
 2026-06-18 10:30:00 [WARN]  [AUTH]         Login fallito — password errata per 'pippo' da 192.168.1.33
 ```
-Categorie: `[AUTH]`, `[UTENTI]`, `[DATI]`, `[NEGOZI]`, `[TIPI_ACCOUNT]`, `[BACKUP]`. L'IP nei log di autenticazione è quello visto dal container (in Docker può essere quello del gateway, vedi "Contatore client connessi").
+Categorie: `[AUTH]`, `[UTENTI]`, `[DATI]`, `[NEGOZI]`, `[TIPI_ACCOUNT]`, `[BACKUP]`, `[LOG]`.
+
+**Log su file e download (superadmin):** oltre che su stdout, il log va in `DATA_DIR/log/server.log` (stesso formato, `RotatingFileHandler`, `LOG_FILE_MAX_BYTES` × `LOG_FILE_KEEP`, permessi `0600`; richiede il volume `/data`, come i backup). Se la cartella non è scrivibile o `LOG_FILE_MAX_BYTES=0` si prosegue solo con stdout. Il superadmin vede l'elenco e scarica i file dalla scheda "Log" del pannello (nessuna anteprima): il download usa `fetch` con `X-Session-Token` e salva il blob (il token non va mai nell'URL). Il server accetta solo i nomi `server.log[.N]` (nessun path traversal) e registra ogni download con `[LOG]`. Le risposte non JSON passano da `FileResponse`/`Handler.send_file()`. I log contengono username e IP. L'IP nei log di autenticazione è quello visto dal container (in Docker può essere quello del gateway, vedi "Contatore client connessi").
 
 ### Contatore client connessi
 Heartbeat tramite `client_heartbeat{}`, chiave = header `X-Client-ID` (UUID-like generato dal browser con `crypto.getRandomValues()`, salvato in `sessionStorage`), con fallback sull'IP se l'header manca (retrocompatibilità, es. richieste esterne senza frontend). Un client è "attivo" se ha fatto una richiesta (ping o data) negli ultimi 15 secondi.
